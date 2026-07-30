@@ -19,7 +19,7 @@ from datetime import datetime, date as date_cls
 from sqlalchemy.orm import Session
 
 from . import models
-from .model import dixon_coles, calc_rps
+from .model import dixon_coles, calc_rps, scope_for_competition, neutral_for_competition
 
 
 import re
@@ -34,17 +34,71 @@ def normalize_team_name(name: str) -> str:
     different teams, halving the effective sample count for every affected
     club and corrupting the fitted attack/defense parameters.
 
-    Strips a trailing " FC" or " AFC" suffix, but preserves a leading
-    "AFC " prefix where it's actually part of the club's name (e.g.
-    "AFC Bournemouth" must NOT become "Bournemouth" -- that's not how
-    anyone, including this same dataset, ever refers to that club).
-    Verified against 13 real team names seen across multiple seasons
-    before being trusted here.
+    Three passes:
+    0. Strip a trailing country code like " (ENG)" / " (ITA)". Champions
+       League data tags every team this way ("Aston Villa FC (ENG)") while
+       domestic league data and the fitted parameter table do not. Without
+       this, every UCL team misses the parameter lookup and falls through
+       to the meaningless (0,0) fallback — and the cross-league calibration
+       that makes UCL predictions possible at all would silently break.
+    1. Strip a trailing " FC" or " AFC" suffix, but preserve a leading
+       "AFC " prefix where it's actually part of the club's name (e.g.
+       "AFC Bournemouth" must NOT become "Bournemouth"). This alone fully
+       resolves English Premier League naming drift — verified by cross-
+       referencing all 11 historical seasons (2015-16 to 2025-26) against
+       the actual current 2025-26 EPL roster: every one of the 14 residual
+       unmatched historical names turned out to be a genuinely-relegated
+       club (Cardiff City, Watford, etc.), not an unhandled variant.
+    2. Look up an explicit alias table for cases the suffix rule can't
+       handle — different word order ("Atlético Madrid" vs "Club Atlético
+       de Madrid"), prefix additions ("Bayern München" vs "FC Bayern
+       München"), or abbreviation expansion ("Bor. Mönchengladbach" vs
+       "Borussia Mönchengladbach"). Every entry below was individually
+       verified: fetch all 11 historical seasons, fetch the current
+       2025-26 roster, diff them, and manually confirm each residual name
+       against real club identities rather than guessed via a fuzzier
+       automated rule (a shared-substring heuristic risks false-positive
+       merges here — e.g. "Real Madrid", "Real Betis", "Real Sociedad",
+       "Real Valladolid" all share the word "Real" but are four different
+       clubs).
     """
-    name = name.strip()
+    name = re.sub(r"\s*\([A-Z]{3}\)\s*$", "", (name or "").strip())
     if name.startswith("AFC ") and not name.endswith(" AFC"):
-        return name
-    return re.sub(r"\s+(AFC|FC)$", "", name).strip()
+        pass
+    else:
+        name = re.sub(r"\s+(AFC|FC)$", "", name).strip()
+
+    return _CLUB_NAME_ALIASES.get(name, name)
+
+
+_CLUB_NAME_ALIASES = {
+    # La Liga — verified against 2025-26 roster (Real Valladolid used
+    # match-count tiebreak: 114 vs 76, since Valladolid isn't in the
+    # 2025-26 top flight and there's no current-season signal to check)
+    "Atlético Madrid": "Club Atlético de Madrid",
+    "CD Alavés": "Deportivo Alavés",
+    "RC Celta": "RC Celta de Vigo",
+    "Espanyol Barcelona": "RCD Espanyol de Barcelona",
+    "Rayo Vallecano": "Rayo Vallecano de Madrid",
+    "Real Betis": "Real Betis Balompié",
+    "Real Madrid": "Real Madrid CF",
+    "Real Sociedad": "Real Sociedad de Fútbol",
+    "Real Valladolid": "Real Valladolid CF",
+    # Serie A — verified against 2025-26 roster (UC Sampdoria used
+    # match-count tiebreak: 190 vs 114, Sampdoria isn't currently Serie A)
+    "Atalanta": "Atalanta BC",
+    "Bologna": "Bologna FC 1909",
+    "Inter": "FC Internazionale Milano",
+    "Lazio Roma": "SS Lazio",
+    "Sassuolo Calcio": "US Sassuolo Calcio",
+    "UC Sampdoria": "Sampdoria",
+    # Bundesliga — verified against 2025-26 roster
+    "1899 Hoffenheim": "TSG 1899 Hoffenheim",
+    "Bayer Leverkusen": "Bayer 04 Leverkusen",
+    "Bayern München": "FC Bayern München",
+    "Bor. Mönchengladbach": "Borussia Mönchengladbach",
+    "Werder Bremen": "SV Werder Bremen",
+}
 
 
 def _extract_final_score(score_field):
@@ -90,30 +144,25 @@ def guess_current_season(today: date_cls = None) -> str:
     return f"{start_year}-{end_year_short}"
 
 
-def resolve_season_url(url_template: str) -> tuple:
+def resolve_season_url(url_template: str, max_lookback: int = 4) -> tuple:
     """
-    For season-based competitions, data_source is stored as a URL template
-    containing the literal string "{season}", e.g.:
-      https://openfootball.github.io/england/{season}/1-premierleague.json
+    赛季制赛事的 data_source 存的是含 "{season}" 占位符的模板。
 
-    Tries the guessed current season first. If that file doesn't exist yet
-    (e.g. it's July and the new season hasn't been published), falls back
-    to the previous season -- this is a real, observed situation: as of
-    this writing, the 2025-26 Premier League season is fully complete
-    (38 rounds) and 2026-27 has not yet appeared, since the new season
-    doesn't start until mid-August. Without this fallback, the scheduler
-    would hit a 404 every single run during the close season and silently
-    stop updating anything for that competition.
+    先试猜出来的当前赛季，不存在就逐个往回退。往回退几季很重要：
+    欧冠数据源最新只到 2024-25（2025-26 那季数据源没有），从 2026-27 算起
+    要退 3 季才够得着。之前只退 1 季，结果两个候选都 404，整个抓取直接失败——
+    这是实跑时才发现的，不是理论问题。
 
-    Returns (resolved_url, season_used) so callers/logs can tell which
-    season actually got fetched.
+    返回 (解析出的url, 用的赛季)。全都找不到时返回第一个候选，让调用方
+    拿到明确的 404 而不是一个静默的 None 往下游传。
     """
     current_season = guess_current_season()
-    candidates = [current_season]
-    # Also try the previous season as a fallback (handles the close-season gap)
     start_year = int(current_season.split("-")[0])
-    prev_season = f"{start_year - 1}-{str(start_year)[-2:]}"
-    candidates.append(prev_season)
+
+    candidates = []
+    for back in range(max_lookback + 1):
+        y = start_year - back
+        candidates.append(f"{y}-{str(y + 1)[-2:]}")
 
     for season in candidates:
         url = url_template.replace("{season}", season)
@@ -124,9 +173,6 @@ def resolve_season_url(url_template: str) -> tuple:
         except requests.RequestException:
             continue
 
-    # Nothing resolved -- return the first guess anyway so the caller gets
-    # a clear 404 in its error log rather than a silent None making its
-    # way further into the pipeline.
     return url_template.replace("{season}", candidates[0]), candidates[0]
 
 
@@ -137,20 +183,37 @@ def get_active_competitions(db: Session):
     ).all()
 
 
+def _resolve_data_source(comp: models.Competition) -> str:
+    """
+    World Cup's data_source is a fixed URL (one ongoing tournament, no
+    season concept). Club leagues store a URL template containing the
+    literal "{season}" placeholder, resolved via resolve_season_url()
+    at fetch time -- verified against the real network: guess_current_season()
+    correctly guesses "2026-27" given a July date, resolve_season_url()
+    correctly detects that file doesn't exist yet (season hasn't started,
+    confirmed via real HEAD request) and falls back to "2025-26" (confirmed
+    to exist, HTTP 200).
+    """
+    if "{season}" in comp.data_source:
+        url, _season = resolve_season_url(comp.data_source)
+        return url
+    return comp.data_source
+
+
 def fetch_results(comp: models.Competition) -> list:
-    r = requests.get(comp.data_source, timeout=15)
+    r = requests.get(_resolve_data_source(comp), timeout=15)
     r.raise_for_status()
     data = r.json()
-    return [m for m in data["matches"] if m.get("score") and "ft" in m["score"]]
+    return [m for m in data["matches"] if _extract_final_score(m.get("score")) is not None]
 
 
 def fetch_upcoming(comp: models.Competition) -> list:
-    r = requests.get(comp.data_source, timeout=15)
+    r = requests.get(_resolve_data_source(comp), timeout=15)
     r.raise_for_status()
     data = r.json()
     out = []
     for m in data["matches"]:
-        has_score = m.get("score") and "ft" in m["score"]
+        has_score = _extract_final_score(m.get("score")) is not None
         placeholder = m.get("team1", "").startswith(("W", "L")) or m.get("team2", "").startswith(("W", "L"))
         if not has_score and not placeholder:
             out.append(m)
@@ -161,8 +224,8 @@ def upsert_matches(db: Session, comp: models.Competition, played: list, upcoming
     updated = 0
 
     for m in played:
-        t1, t2, d = m["team1"], m["team2"], m["date"]
-        s1, s2 = m["score"]["ft"]
+        t1, t2, d = normalize_team_name(m["team1"]), normalize_team_name(m["team2"]), m["date"]
+        s1, s2 = _extract_final_score(m["score"])
         existing = db.query(models.Match).filter_by(
             competition_id=comp.id, date=date_cls.fromisoformat(d), team1=t1, team2=t2
         ).first()
@@ -181,7 +244,7 @@ def upsert_matches(db: Session, comp: models.Competition, played: list, upcoming
             updated += 1
 
     for m in upcoming:
-        t1, t2, d = m["team1"], m["team2"], m["date"]
+        t1, t2, d = normalize_team_name(m["team1"]), normalize_team_name(m["team2"]), m["date"]
         existing = db.query(models.Match).filter_by(
             competition_id=comp.id, date=date_cls.fromisoformat(d), team1=t1, team2=t2
         ).first()
@@ -239,6 +302,12 @@ def update_bayesian_states_for_newly_played_matches(db: Session) -> int:
 
     cache = {}
 
+    # 赛事id → 赛事code → 参数作用域。贝叶斯的先验种子来自 MLE 点估计，
+    # 取错表的话俱乐部球队会拿到国家队表的兜底值(0,0)当种子，后验从一开始就是错的。
+    comp_scope = {}
+    for c in db.query(models.Competition).all():
+        comp_scope[c.id] = scope_for_competition(c.code)
+
     def get_state(team_name, competition_id):
         key = (team_name, competition_id)
         if key in cache:
@@ -254,7 +323,8 @@ def update_bayesian_states_for_newly_played_matches(db: Session) -> int:
                 "decay": row.decay, "n_updates": row.n_updates,
             })
         else:
-            mle_attack, mle_defense = get_mle_params(team_name)
+            scope = comp_scope.get(competition_id, "international")
+            mle_attack, mle_defense = get_mle_params(team_name, scope)
             state = BayesianTeamState(team_name, mle_attack, mle_defense, n_historical_matches=100)
         cache[key] = state
         return state
@@ -305,6 +375,8 @@ def update_predictions(db: Session) -> int:
     from .model import BayesianTeamState
 
     matches = db.query(models.Match).all()
+    # 一次性查出赛事表，循环里直接查字典，不要每场比赛都打一次数据库
+    comp_by_id = {c.id: c for c in db.query(models.Competition).all()}
     updated = 0
     for m in matches:
         attack_override, defense_override = {}, {}
@@ -322,7 +394,14 @@ def update_predictions(db: Session) -> int:
                 attack_override[team_name] = state.current_attack()
                 defense_override[team_name] = state.current_defense()
 
-        pred = dixon_coles(m.team1, m.team2, attack_override=attack_override, defense_override=defense_override)
+        comp = comp_by_id.get(m.competition_id)
+        code = comp.code if comp else ""
+        pred = dixon_coles(
+            m.team1, m.team2,
+            attack_override=attack_override, defense_override=defense_override,
+            scope=scope_for_competition(code),
+            neutral=neutral_for_competition(code),
+        )
         row = db.query(models.Prediction).filter_by(match_id=m.id).first()
         if not row:
             row = models.Prediction(match_id=m.id)
@@ -347,6 +426,52 @@ def update_predictions(db: Session) -> int:
         updated += 1
     db.commit()
     return updated
+
+
+def resolve_parlay_bets(db: Session) -> int:
+    """
+    结算串关注单。
+
+    结算规则（跟单场注单不同，容易写错，这里说清楚）：
+    - 任何一腿输了 → 整注立刻判负，**不需要等其余场次踢完**。一注5腿的串关
+      如果第1场就输了，剩下4场结果如何都不影响，立刻结算为 loss。
+    - 全部腿都踢完且全中 → 判赢。
+    - 没有腿输、但还有腿没踢 → 保持 pending。
+
+    如果按单场那种「所有关联比赛都踢完才结算」的写法，已经确定输掉的串关会
+    在账面上挂着 pending 好几天，资金曲线就是错的。
+    """
+    resolved = 0
+    pending = db.query(models.ParlayBet).filter_by(result="pending").all()
+
+    for parlay in pending:
+        any_leg_lost = False
+        all_legs_played = True
+
+        for leg in parlay.legs:
+            m = leg.match
+            if not m or m.status != "played" or m.score1 is None:
+                all_legs_played = False
+                continue
+            actual = "home" if m.score1 > m.score2 else "away" if m.score1 < m.score2 else "draw"
+            if leg.outcome != actual:
+                any_leg_lost = True
+                break  # 一腿输了就够了，不用再看其他腿
+
+        if any_leg_lost:
+            parlay.result = "loss"
+            parlay.pnl = -parlay.stake
+            parlay.settled_at = datetime.utcnow()
+            resolved += 1
+        elif all_legs_played:
+            parlay.result = "win"
+            parlay.pnl = round(parlay.stake * parlay.odds_used - parlay.stake, 2)
+            parlay.settled_at = datetime.utcnow()
+            resolved += 1
+        # 否则保持 pending
+
+    db.commit()
+    return resolved
 
 
 def resolve_bets(db: Session) -> int:
@@ -407,15 +532,28 @@ def run_full_update(db: Session) -> dict:
         log = models.UpdateLog(matches_updated=0, predictions_updated=0, bets_resolved=0, status="ok")
         try:
             total_matches_updated = 0
+            failed_comps = []
             for comp in get_active_competitions(db):
-                played = fetch_results(comp)
-                upcoming = fetch_upcoming(comp)
-                total_matches_updated += upsert_matches(db, comp, played, upcoming)
+                # 每个赛事单独 try —— 一个赛事的数据源挂了（比如某季文件还没
+                # 发布），不该连累其他赛事。实测踩过：欧冠 404 导致整个事务回滚，
+                # 另外5个赛事的预测一条都没生成。
+                try:
+                    played = fetch_results(comp)
+                    upcoming = fetch_upcoming(comp)
+                    total_matches_updated += upsert_matches(db, comp, played, upcoming)
+                except Exception as ce:
+                    db.rollback()
+                    failed_comps.append(f"{comp.code}: {str(ce)[:120]}")
 
             log.matches_updated = total_matches_updated
             update_bayesian_states_for_newly_played_matches(db)
             log.predictions_updated = update_predictions(db)
-            log.bets_resolved = resolve_bets(db)
+            log.bets_resolved = resolve_bets(db) + resolve_parlay_bets(db)
+            if failed_comps:
+                # 部分失败照样算这次更新跑完了，但把失败的赛事记下来，
+                # 否则数据悄悄少了一个赛事却看不出来
+                log.status = "partial"
+                log.detail = "以下赛事抓取失败（其余正常）: " + "; ".join(failed_comps)
 
         except Exception as e:
             log.status = "error"

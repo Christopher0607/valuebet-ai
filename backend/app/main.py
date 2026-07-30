@@ -4,16 +4,19 @@ See README.md in the project root for full setup instructions.
 """
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
 import logging
+import os
 
 from .models import (
     init_db, get_db, Match, Prediction, Odds, Bet, RealBet, UserSettings,
-    Competition, UpdateLog, BayesianTeamStateRow,
+    Competition, UpdateLog, BayesianTeamStateRow, ParlayBet, ParlayLeg,
 )
 from .updater import run_full_update
 from .scheduler import start_scheduler, next_run_info
@@ -40,20 +43,42 @@ def on_startup():
 
 
 def _seed_default_competition():
+    """
+    登记所有赛事。data_source 里的 {season} 占位符由 _resolve_data_source()
+    在抓取时替换——它会先探测当前赛季（7月之后猜下一个新赛季），文件不存在
+    就自动回退到上一个完整赛季，所以新赛季一发布就会自动接上，不用改代码。
+
+    赛事 code 必须跟 model.py 里 COMPETITION_SCOPE / COMPETITION_NEUTRAL 的
+    键对应，否则会走兜底参数，产出所有球队都一样的空洞预测（不报错，要留意）。
+    """
     from .models import SessionLocal
     db = SessionLocal()
+    BASE = "https://raw.githubusercontent.com/openfootball/football.json/master/{season}"
     try:
-        if not db.query(Competition).filter_by(code="wc2026").first():
-            db.add(Competition(
-                code="wc2026", name="2026 FIFA World Cup", name_zh="2026世界杯",
-                data_source="https://raw.githubusercontent.com/openfootball/worldcup.json/master/2026/worldcup.json",
-                is_active=True,
-            ))
-        if not db.query(Competition).filter_by(code="ucl2627").first():
-            db.add(Competition(
-                code="ucl2627", name="UEFA Champions League 2026/27", name_zh="欧冠 2026/27",
-                data_source=None, is_active=False,
-            ))
+        specs = [
+            ("wc2026", "2026 FIFA World Cup", "2026世界杯",
+             "https://raw.githubusercontent.com/openfootball/worldcup.json/master/2026/worldcup.json", True),
+            ("epl", "English Premier League", "英超", f"{BASE}/en.1.json", True),
+            ("laliga", "La Liga", "西甲", f"{BASE}/es.1.json", True),
+            ("seriea", "Serie A", "意甲", f"{BASE}/it.1.json", True),
+            ("bundesliga", "Bundesliga", "德甲", f"{BASE}/de.1.json", True),
+            ("ucl", "UEFA Champions League", "欧冠", f"{BASE}/uefa.cl.json", True),
+        ]
+        for code, name, name_zh, src, active in specs:
+            existing = db.query(Competition).filter_by(code=code).first()
+            if existing:
+                # 数据源可能会更新（比如换了路径），已存在的记录也同步一下
+                existing.data_source = src
+                existing.is_active = active
+            else:
+                db.add(Competition(code=code, name=name, name_zh=name_zh,
+                                   data_source=src, is_active=active))
+
+        # 清掉早期那个没有数据源的欧冠占位记录，避免和上面真正的 'ucl' 重复
+        stale = db.query(Competition).filter_by(code="ucl2627").first()
+        if stale:
+            db.delete(stale)
+
         db.commit()
     finally:
         db.close()
@@ -332,40 +357,74 @@ def update_settings(payload: SettingsInput, db: Session = Depends(get_db)):
 
 @app.get("/api/bankroll-summary")
 def bankroll_summary(db: Session = Depends(get_db)):
+    """
+    资金走势 + 汇总。资金池是全局共用的（所有赛事共享一个 bankroll_total），
+    盈亏统计按虚拟盘/实盘分开，但不按赛事分开——赛事维度的统计在
+    /api/backtest-summary，那个是模型预测准确率，跟资金流向是两回事。
+
+    串关盈亏计入对应的虚拟/实盘曲线（一注串关算一个资金事件）。
+    """
     settings = db.query(UserSettings).filter_by(setting_key="default").first()
     base = settings.bankroll_total
 
-    v_bets = db.query(Bet).filter(Bet.result != "pending").order_by(Bet.created_at).all()
-    r_bets = db.query(RealBet).filter(RealBet.result != "pending").order_by(RealBet.placed_at).all()
+    v_bets = db.query(Bet).filter(Bet.result != "pending").all()
+    r_bets = db.query(RealBet).filter(RealBet.result != "pending").all()
+    parlays = db.query(ParlayBet).filter(ParlayBet.result != "pending").all()
 
-    def build_series(bets, pnl_attr, stake_attr):
-        running = base
-        points = [{"date": datetime.utcnow().date().isoformat(), "balance": running}]
-        for b in bets:
-            running += getattr(b, pnl_attr) or 0
-            ts = getattr(b, "created_at", None) or getattr(b, "placed_at", None)
-            points.append({"date": ts.date().isoformat(), "balance": round(running, 2)})
-        return points
+    # 把所有已结算的资金事件收敛成 (日期, 盈亏, 虚拟还是实盘) 三元组
+    events = []
+    for b in v_bets:
+        events.append((b.created_at.date(), b.pnl or 0, "virtual"))
+    for b in r_bets:
+        events.append((b.placed_at.date(), b.pnl_real or 0, "real"))
+    for p in parlays:
+        events.append((p.created_at.date(), p.pnl or 0, "virtual" if p.kind == "virtual" else "real"))
 
-    v_series = build_series(v_bets, "pnl", "stake")
-    r_series = build_series(r_bets, "pnl_real", "stake_real")
+    events.sort(key=lambda e: e[0])
 
-    v_pnl = sum(b.pnl or 0 for b in v_bets)
-    r_pnl = sum(b.pnl_real or 0 for b in r_bets)
-    v_staked = sum(b.stake for b in v_bets) or 1
-    r_staked = sum(b.stake_real for b in r_bets) or 1
+    # 合并成单一数据集，每个点同时带 virtual 和 real 两个值。
+    # 之前是两个独立数组分别喂给两条 Line，配 category 类型的 X 轴时
+    # recharts 会因为两边日期集合不同而画歪——这是曲线看起来有问题的原因之一。
+    # 另一个原因是起点被写死成「今天」，后面的点却是比赛的历史日期，
+    # 导致线从今天往回画。现在起点取最早一笔注单的日期。
+    start_date = events[0][0] if events else datetime.utcnow().date()
+    series = [{"date": start_date.isoformat(), "virtual": base, "real": base}]
+
+    v_running = base
+    r_running = base
+    for ev_date, pnl, kind in events:
+        if kind == "virtual":
+            v_running += pnl
+        else:
+            r_running += pnl
+        series.append({
+            "date": ev_date.isoformat(),
+            "virtual": round(v_running, 2),
+            "real": round(r_running, 2),
+        })
+
+    v_pnl = sum(b.pnl or 0 for b in v_bets) + sum(p.pnl or 0 for p in parlays if p.kind == "virtual")
+    r_pnl = sum(b.pnl_real or 0 for b in r_bets) + sum(p.pnl or 0 for p in parlays if p.kind == "real")
+    v_staked = sum(b.stake for b in v_bets) + sum(p.stake for p in parlays if p.kind == "virtual")
+    r_staked = sum(b.stake_real for b in r_bets) + sum(p.stake for p in parlays if p.kind == "real")
+
+    v_wins = sum(1 for b in v_bets if b.result == "win") + sum(1 for p in parlays if p.kind == "virtual" and p.result == "win")
+    r_wins = sum(1 for b in r_bets if b.result == "win") + sum(1 for p in parlays if p.kind == "real" and p.result == "win")
 
     return {
         "bankroll_base": base,
+        "series": series,
         "virtual": {
-            "series": v_series, "total_pnl": round(v_pnl, 2),
-            "roi_pct": round(v_pnl / v_staked * 100, 2),
-            "total_bets": len(v_bets), "wins": sum(1 for b in v_bets if b.result == "win"),
+            "total_pnl": round(v_pnl, 2),
+            "roi_pct": round(v_pnl / v_staked * 100, 2) if v_staked else 0,
+            "total_bets": len(v_bets) + sum(1 for p in parlays if p.kind == "virtual"),
+            "wins": v_wins,
         },
         "real": {
-            "series": r_series, "total_pnl": round(r_pnl, 2),
-            "roi_pct": round(r_pnl / r_staked * 100, 2),
-            "total_bets": len(r_bets), "wins": sum(1 for b in r_bets if b.result == "win"),
+            "total_pnl": round(r_pnl, 2),
+            "roi_pct": round(r_pnl / r_staked * 100, 2) if r_staked else 0,
+            "total_bets": len(r_bets) + sum(1 for p in parlays if p.kind == "real"),
+            "wins": r_wins,
         },
     }
 
@@ -375,17 +434,52 @@ def bankroll_summary(db: Session = Depends(get_db)):
 # ══════════════════════════════════════════════════════════
 
 @app.get("/api/backtest-summary")
-def backtest_summary(db: Session = Depends(get_db)):
-    preds = db.query(Prediction).join(Match).filter(Match.status == "played").all()
-    total = len(preds)
-    correct = sum(1 for p in preds if p.is_correct)
-    avg_rps = sum(p.rps or 0 for p in preds) / total if total else 0
-    return {
-        "total": total, "correct": correct,
-        "accuracy": round(correct / total, 4) if total else 0,
-        "avg_rps": round(avg_rps, 4),
-        "random_baseline_rps": 0.245,
-    }
+def backtest_summary(competition_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """
+    传 competition_id → 返回该赛事的扁平统计（向后兼容旧格式）
+    不传 → 返回按赛事拆分的数组，**不做任何跨赛事聚合**
+
+    为什么不能混着算：不同赛事是不同的球队池、不同的参数表、大概率不同的
+    准确率。把世界杯的 67% 和联赛的准确率平均成一个数字，那个数字哪个都
+    不代表。加第二个赛事之前先修掉，而不是等数字已经明显错了才发现。
+    """
+    def _stats(preds):
+        total = len(preds)
+        correct = sum(1 for p in preds if p.is_correct)
+        avg_rps = sum(p.rps or 0 for p in preds) / total if total else 0
+        return total, correct, avg_rps
+
+    if competition_id is not None:
+        preds = db.query(Prediction).join(Match).filter(
+            Match.status == "played", Match.competition_id == competition_id
+        ).all()
+        total, correct, avg_rps = _stats(preds)
+        return {
+            "competition_id": competition_id,
+            "total": total, "correct": correct,
+            "accuracy": round(correct / total, 4) if total else 0,
+            "avg_rps": round(avg_rps, 4),
+            "random_baseline_rps": 0.245,
+        }
+
+    by_competition = []
+    for comp in db.query(Competition).order_by(Competition.id).all():
+        preds = db.query(Prediction).join(Match).filter(
+            Match.status == "played", Match.competition_id == comp.id
+        ).all()
+        total, correct, avg_rps = _stats(preds)
+        if total == 0:
+            continue          # 还没有已完赛比赛的赛事不列出来
+        by_competition.append({
+            "competition_id": comp.id,
+            "competition_code": comp.code,
+            "competition_name": comp.name_zh or comp.name,
+            "total": total, "correct": correct,
+            "accuracy": round(correct / total, 4),
+            "avg_rps": round(avg_rps, 4),
+        })
+
+    return {"by_competition": by_competition, "random_baseline_rps": 0.245}
 
 
 # ══════════════════════════════════════════════════════════
@@ -556,6 +650,109 @@ def suggest_parlay_combinations(payload: ParlaySuggestInput, db: Session = Depen
     return result
 
 
+class ParlayLegRecord(BaseModel):
+    match_id: int
+    outcome: str
+    odds: float
+    prob: Optional[float] = None
+
+
+class ParlayBetRecord(BaseModel):
+    kind: str = "virtual"                    # 'virtual' | 'real'
+    legs: list[ParlayLegRecord]
+    stake: float
+    odds_used: Optional[float] = None        # 不填就用各腿赔率相乘
+    joint_probability: Optional[float] = None
+    ev_at_bet: Optional[float] = None
+    kelly_pct: Optional[float] = None
+    platform: str = "bk8"
+    currency: str = "HKD"
+
+
+@app.post("/api/parlay-bets")
+def create_parlay_bet(payload: ParlayBetRecord, db: Session = Depends(get_db)):
+    """
+    把一注串关记进账。虚拟盘和实盘用 kind 区分，两者都会进入资金曲线
+    （资金池全局共用，不按赛事分开）。
+
+    odds_used 允许覆盖：博彩公司的串关定价不一定严格等于各腿赔率相乘，
+    实盘记录时应该填你真实拿到的总赔率，否则账面盈亏会跟实际对不上。
+    """
+    if payload.kind not in ("virtual", "real"):
+        raise HTTPException(400, "kind must be 'virtual' or 'real'")
+    if len(payload.legs) < 2:
+        raise HTTPException(400, "串关至少需要2条腿")
+
+    match_ids = [l.match_id for l in payload.legs]
+    if len(set(match_ids)) != len(match_ids):
+        raise HTTPException(400, "同一场比赛不能在一注串关里出现两次（那不是独立事件）")
+
+    for l in payload.legs:
+        if not db.query(Match).filter_by(id=l.match_id).first():
+            raise HTTPException(404, f"match_id {l.match_id} 不存在")
+
+    odds_used = payload.odds_used
+    if odds_used is None:
+        odds_used = 1.0
+        for l in payload.legs:
+            odds_used *= l.odds
+
+    parlay = ParlayBet(
+        kind=payload.kind, stake=payload.stake, odds_used=round(odds_used, 4),
+        joint_probability=payload.joint_probability, ev_at_bet=payload.ev_at_bet,
+        kelly_pct=payload.kelly_pct, platform=payload.platform,
+        currency=payload.currency, result="pending",
+    )
+    db.add(parlay)
+    db.flush()
+
+    for l in payload.legs:
+        db.add(ParlayLeg(
+            parlay_bet_id=parlay.id, match_id=l.match_id,
+            outcome=l.outcome, leg_odds=l.odds, leg_prob=l.prob,
+        ))
+    db.commit()
+    db.refresh(parlay)
+    return _parlay_dict(parlay)
+
+
+def _parlay_dict(p: ParlayBet):
+    return {
+        "id": p.id, "kind": p.kind, "stake": p.stake, "odds_used": p.odds_used,
+        "joint_probability": p.joint_probability, "ev_at_bet": p.ev_at_bet,
+        "kelly_pct": p.kelly_pct, "platform": p.platform, "currency": p.currency,
+        "result": p.result, "pnl": p.pnl,
+        "created_at": p.created_at.isoformat(),
+        "settled_at": p.settled_at.isoformat() if p.settled_at else None,
+        "legs": [{
+            "match_id": l.match_id, "outcome": l.outcome,
+            "odds": l.leg_odds, "prob": l.leg_prob,
+            "team1": l.match.team1 if l.match else None,
+            "team2": l.match.team2 if l.match else None,
+            "date": l.match.date.isoformat() if l.match else None,
+            "score": f"{l.match.score1}-{l.match.score2}" if l.match and l.match.score1 is not None else None,
+        } for l in p.legs],
+    }
+
+
+@app.get("/api/parlay-bets")
+def list_parlay_bets(kind: Optional[str] = None, db: Session = Depends(get_db)):
+    q = db.query(ParlayBet)
+    if kind:
+        q = q.filter(ParlayBet.kind == kind)
+    return [_parlay_dict(p) for p in q.order_by(ParlayBet.created_at.desc()).all()]
+
+
+@app.delete("/api/parlay-bets/{parlay_id}")
+def delete_parlay_bet(parlay_id: int, db: Session = Depends(get_db)):
+    p = db.query(ParlayBet).filter_by(id=parlay_id).first()
+    if not p:
+        raise HTTPException(404, "串关注单不存在")
+    db.delete(p)
+    db.commit()
+    return {"status": "deleted", "id": parlay_id}
+
+
 @app.get("/api/score-distribution/{match_id}")
 def get_score_distribution(match_id: int, goals_threshold: float = 2.5, db: Session = Depends(get_db)):
     """
@@ -597,3 +794,19 @@ def get_score_distribution(match_id: int, goals_threshold: float = 2.5, db: Sess
         "team1_goals_under_threshold": dist["team1_goals_under"].get(goals_threshold),
         "team1_goals_over_threshold": dist["team1_goals_over"].get(goals_threshold),
     }
+
+
+# ══════════════════════════════════════════════════════════
+# 托管打包好的前端
+# ══════════════════════════════════════════════════════════
+# 让后端直接把 frontend/dist 当静态文件发出去，好处是只需要跑一个进程、
+# 开一个端口，双击启动脚本就能用，不用同时挂着 uvicorn 和 vite 两个终端。
+# 开发时想用 vite 热更新照旧（CORS 已经允许 5173），这里不影响。
+_DIST = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
+
+if os.path.isdir(_DIST):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_DIST, "assets")), name="assets")
+
+    @app.get("/")
+    def _serve_index():
+        return FileResponse(os.path.join(_DIST, "index.html"))

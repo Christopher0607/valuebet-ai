@@ -24,27 +24,86 @@ DC_RHO = -0.13
 # ══════════════════════════════════════════════════════════
 # MLE 拟合参数加载
 # ══════════════════════════════════════════════════════════
-_PARAMS_PATH = os.path.join(os.path.dirname(__file__), "..", "training", "fitted_parameters.json")
+_TRAINING_DIR = os.path.join(os.path.dirname(__file__), "..", "training")
 
-def _load_fitted_params():
-    with open(_PARAMS_PATH) as f:
-        return json.load(f)
+# 参数表按「作用域」区分，不是按赛事。两张表：
+#   international —— 国家队（世界杯、欧洲杯等），261支国家队
+#   club          —— 俱乐部（四大联赛 + 欧冠合并训练），164支俱乐部
+#
+# 为什么俱乐部只有一张表、而不是每个联赛一张：MLE 拟合出的 attack/defense
+# 只在同一训练池内部可比——给某联赛所有球队的 attack 和 defense 同时加一个
+# 常数，league 内部的预测完全不变，存在无法识别的「联赛整体偏移量」。
+# 分开训练的话，曼城的 attack=1.5 和皇马的 attack=1.5 不能直接比，欧冠这种
+# 跨联赛对局就没法算。四大联赛+欧冠一起训练，欧冠比赛充当连接各联赛的
+# 「桥」，所有参数才落在同一把尺子上。
+_PARAM_FILES = {
+    "international": "fitted_parameters.json",
+    "club": "fitted_parameters_club.json",
+}
 
-_FITTED = _load_fitted_params()
-HOME_ADVANTAGE = _FITTED["home_advantage"]
+# 赛事代码 → 参数作用域。新增赛事时在这里登记，忘了登记会走 fallback 兜底，
+# 产出的是所有球队都一样的空洞预测（不会报错，所以要留意）。
+COMPETITION_SCOPE = {
+    "wc2026": "international",
+    "epl": "club", "laliga": "club", "seriea": "club", "bundesliga": "club",
+    "ucl": "club",
+}
+
+# 世界杯是中立场地赛制，主场优势恒为0；俱乐部联赛是真实主客场，要启用。
+COMPETITION_NEUTRAL = {
+    "wc2026": True,
+    "epl": False, "laliga": False, "seriea": False, "bundesliga": False,
+    "ucl": False,     # 欧冠只有决赛在中立场，训练数据里已按轮次区分，这里取多数情况
+}
+
+_PARAM_CACHE = {}
+
+
+def load_params(scope: str = "international") -> dict:
+    """按作用域加载参数表，带缓存（每次调用都读文件的话，跑一遍全量预测会读几百次）。"""
+    if scope in _PARAM_CACHE:
+        return _PARAM_CACHE[scope]
+    filename = _PARAM_FILES.get(scope, _PARAM_FILES["international"])
+    path = os.path.join(_TRAINING_DIR, filename)
+    if not os.path.exists(path):
+        # 俱乐部参数表还没训练出来时不要整个崩掉，退回国家队表并给出明确警告，
+        # 否则排查起来会很困惑（预测能出数字，但全是兜底值）
+        print(f"⚠️  参数表 {filename} 不存在，scope={scope} 退回 international 表。"
+              f"俱乐部比赛的预测会是无意义的兜底值，请先跑 training/train_mle_club.py")
+        path = os.path.join(_TRAINING_DIR, _PARAM_FILES["international"])
+    with open(path) as f:
+        data = json.load(f)
+    # 队名索引统一转小写，避免每次查询都遍历整张表做大小写不敏感比较
+    data["_index"] = {k.lower(): (v, data["defense"][k]) for k, v in data["attack"].items()}
+    _PARAM_CACHE[scope] = data
+    return data
+
+
+def scope_for_competition(competition_code: str) -> str:
+    return COMPETITION_SCOPE.get(competition_code, "international")
+
+
+def neutral_for_competition(competition_code: str) -> bool:
+    return COMPETITION_NEUTRAL.get(competition_code, True)
+
+
+def home_advantage_for(scope: str = "international") -> float:
+    return load_params(scope)["home_advantage"]
+
+
+# 兼容旧代码：模块级 HOME_ADVANTAGE 仍指国家队表的值
+HOME_ADVANTAGE = load_params("international")["home_advantage"]
 
 # 场次不足以单独拟合的球队（训练时被排除），兜底用联赛平均水平
 FALLBACK_ATTACK = 0.0
 FALLBACK_DEFENSE = 0.0
 
 
-def get_mle_params(name: str) -> tuple:
+def get_mle_params(name: str, scope: str = "international") -> tuple:
     """返回 (attack, defense) 点估计。球队不在拟合表里时返回联赛平均水平。"""
-    key = (name or "").strip()
-    for team_name, val in _FITTED["attack"].items():
-        if team_name.lower() == key.lower():
-            return val, _FITTED["defense"][team_name]
-    return FALLBACK_ATTACK, FALLBACK_DEFENSE
+    key = (name or "").strip().lower()
+    hit = load_params(scope)["_index"].get(key)
+    return hit if hit else (FALLBACK_ATTACK, FALLBACK_DEFENSE)
 
 
 def poisson_pmf(k: int, lam: float) -> float:
@@ -66,7 +125,8 @@ def dc_tau(a: int, b: int, lam: float, mu: float, rho: float = DC_RHO) -> float:
 
 
 def dixon_coles(team1: str, team2: str, attack_override: dict = None,
-                 defense_override: dict = None, neutral: bool = True) -> dict:
+                 defense_override: dict = None, neutral: bool = True,
+                 scope: str = "international") -> dict:
     """
     返回主/平/客概率，以及支撑数据。
 
@@ -81,14 +141,16 @@ def dixon_coles(team1: str, team2: str, attack_override: dict = None,
     if attack_override and team1 in attack_override:
         a1, d1 = attack_override[team1], defense_override[team1]
     else:
-        a1, d1 = get_mle_params(team1)
+        a1, d1 = get_mle_params(team1, scope)
 
     if attack_override and team2 in attack_override:
         a2, d2 = attack_override[team2], defense_override[team2]
     else:
-        a2, d2 = get_mle_params(team2)
+        a2, d2 = get_mle_params(team2, scope)
 
-    home_adv = 0.0 if neutral else HOME_ADVANTAGE
+    # 主场优势取对应作用域的值：国家队表 0.2471、俱乐部表 0.2100，两者不同，
+    # 混用会系统性地高估或低估主队
+    home_adv = 0.0 if neutral else home_advantage_for(scope)
     lam = max(0.05, min(6.0, math.exp(a1 - d2 + home_adv)))
     mu = max(0.05, min(6.0, math.exp(a2 - d1)))
 
@@ -126,7 +188,7 @@ def dixon_coles(team1: str, team2: str, attack_override: dict = None,
 
 def score_distribution(team1: str, team2: str, attack_override: dict = None,
                         defense_override: dict = None, neutral: bool = True,
-                        max_goals: int = 8) -> dict:
+                        max_goals: int = 8, scope: str = "international") -> dict:
     """
     返回完整的比分概率矩阵，以及总进球数的边际分布。
     这是串关推荐里"西班牙总进球少于X"这类总进球盘口的计算基础——
@@ -136,13 +198,13 @@ def score_distribution(team1: str, team2: str, attack_override: dict = None,
     if attack_override and team1 in attack_override:
         a1, d1 = attack_override[team1], defense_override[team1]
     else:
-        a1, d1 = get_mle_params(team1)
+        a1, d1 = get_mle_params(team1, scope)
     if attack_override and team2 in attack_override:
         a2, d2 = attack_override[team2], defense_override[team2]
     else:
-        a2, d2 = get_mle_params(team2)
+        a2, d2 = get_mle_params(team2, scope)
 
-    home_adv = 0.0 if neutral else HOME_ADVANTAGE
+    home_adv = 0.0 if neutral else home_advantage_for(scope)
     lam = max(0.05, min(6.0, math.exp(a1 - d2 + home_adv)))
     mu = max(0.05, min(6.0, math.exp(a2 - d1)))
 
