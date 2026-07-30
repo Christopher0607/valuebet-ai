@@ -6,3 +6,7 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+
+# 走查产出的中间预测表（几十 MB，可由脚本重跑生成）
+backend/training/validation/*.parquet
+backend/training/validation/dev_tuning_results.csv
