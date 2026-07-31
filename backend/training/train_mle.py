@@ -43,7 +43,7 @@ TARGET_TOURNAMENTS = None  # None = 使用全部赛事类型；也可以传入�
 def load_matches(csv_path=RESULTS_CSV, start_date=TRAINING_START_DATE):
     """读取历史比赛数据，做基础清洗，返回结构化列表。"""
     matches = []
-    with open(csv_path) as f:
+    with open(csv_path, encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if row["home_score"] == "NA" or row["away_score"] == "NA":
@@ -357,6 +357,6 @@ if __name__ == "__main__":
         "attack": {k: round(v, 4) for k, v in attack.items()},
         "defense": {k: round(v, 4) for k, v in defense.items()},
     }
-    with open("fitted_parameters.json", "w") as f:
+    with open("fitted_parameters.json", "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
     print("\n💾 参数已保存到 fitted_parameters.json")

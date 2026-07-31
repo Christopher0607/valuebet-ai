@@ -136,7 +136,7 @@ def build_csv():
     all_rows = domestic + ucl
     all_rows.sort(key=lambda r: r["date"])
 
-    with open(OUT_CSV, "w", newline="") as f:
+    with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["date", "home_team", "away_team",
                                           "home_score", "away_score", "tournament", "neutral"])
         w.writeheader()
@@ -183,7 +183,7 @@ def train():
         "attack": {k: round(v, 4) for k, v in attack.items()},
         "defense": {k: round(v, 4) for k, v in defense.items()},
     }
-    with open(OUT_JSON, "w") as f:
+    with open(OUT_JSON, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
     print(f"\n💾 参数已保存 → {OUT_JSON}")
     return out

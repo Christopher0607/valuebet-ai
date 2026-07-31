@@ -71,7 +71,20 @@ def load_params(scope: str = "international") -> dict:
         print(f"⚠️  参数表 {filename} 不存在，scope={scope} 退回 international 表。"
               f"俱乐部比赛的预测会是无意义的兜底值，请先跑 training/train_mle_club.py")
         path = os.path.join(_TRAINING_DIR, _PARAM_FILES["international"])
-    with open(path) as f:
+    # encoding 必须显式指定。不写的话 Python 用 locale.getpreferredencoding()，
+    # Linux/Mac 是 UTF-8 所以看不出问题，Windows 却是系统代码页（英文区 cp1252、
+    # 中文区 gbk），拿它去读 UTF-8 的参数表会炸。真实报错：
+    #   'charmap' codec can't decode byte 0x81 in position 39
+    # position 39 正是 fitted_parameters_club.json 里 note 字段「四大联赛」的
+    # 第三个字节。这个异常发生在 update_predictions() 内部，被 run_full_update
+    # 的外层 except 吞掉变成 status="error" 并回滚——比赛记录因为 upsert_matches
+    # 自己 commit 过所以还在，但**全部预测被清空**，而 /api/backtest-summary
+    # 是 Prediction JOIN Match，于是每个赛事都变成 total==0 被跳过，
+    # 界面上看起来就是「世界杯数据全部不见了」。一个 encoding 参数的连锁反应。
+    #
+    # 国家队表更阴：它在 cp1252 下不报错但会乱码（Curaçao → CuraÃ§ao），
+    # 队名匹配不上就静默退回 (0,0) 兜底，产出看起来正常实则无意义的预测。
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     # 队名索引统一转小写，避免每次查询都遍历整张表做大小写不敏感比较
     data["_index"] = {k.lower(): (v, data["defense"][k]) for k, v in data["attack"].items()}

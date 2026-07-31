@@ -207,6 +207,23 @@ def fetch_results(comp: models.Competition) -> list:
     return [m for m in data["matches"] if _extract_final_score(m.get("score")) is not None]
 
 
+# 淘汰赛对阵还没确定时，openfootball 用 "Winner Match 73" / "Loser SF1" /
+# "1st Group B" 这类占位符当队名，这些不该被当成真实赛程存进库。
+#
+# 原来的判断是 name.startswith(("W", "L"))，它会误伤**任何以 W 或 L 开头的
+# 真实球队**。对着线上文件实测：2025-26 英超 380 场里 140 场（36.8%）被丢掉
+# （Liverpool、Leeds、West Ham、Wolverhampton），西甲 38 场，欧冠里
+# Liverpool FC (ENG) 和 Lille OSC (FRA) 整季消失。不报错、不记日志、不计数——
+# 现在是休赛期没人看得出来，八月赛程一发布就会静默吞掉三分之一的比赛。
+#
+# 而且它当时什么都没保护到：2026 世界杯文件里以 W/L 开头的队名是零个。
+_BRACKET_PLACEHOLDER = re.compile(r"^(Winner|Loser|Runner-up|1st|2nd|3rd)\b", re.I)
+
+
+def _is_bracket_placeholder(name: str) -> bool:
+    return bool(_BRACKET_PLACEHOLDER.match((name or "").strip()))
+
+
 def fetch_upcoming(comp: models.Competition) -> list:
     r = requests.get(_resolve_data_source(comp), timeout=15)
     r.raise_for_status()
@@ -214,7 +231,7 @@ def fetch_upcoming(comp: models.Competition) -> list:
     out = []
     for m in data["matches"]:
         has_score = _extract_final_score(m.get("score")) is not None
-        placeholder = m.get("team1", "").startswith(("W", "L")) or m.get("team2", "").startswith(("W", "L"))
+        placeholder = _is_bracket_placeholder(m.get("team1", "")) or _is_bracket_placeholder(m.get("team2", ""))
         if not has_score and not placeholder:
             out.append(m)
     return out
