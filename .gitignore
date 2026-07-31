@@ -10,3 +10,7 @@ __pycache__/
 # 走查产出的中间预测表（几十 MB，可由脚本重跑生成）
 backend/training/validation/*.parquet
 backend/training/validation/dev_tuning_results.csv
+
+# 并行代理的 git worktree —— 每个都是本仓库的一份完整副本（15MB+），
+# 提交进来等于把仓库套娃塞进自己。纯本地临时目录，用完即弃。
+.claude/worktrees/
