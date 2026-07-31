@@ -16,11 +16,15 @@ import os
 
 from .models import (
     init_db, get_db, Match, Prediction, Odds, Bet, RealBet, UserSettings,
-    Competition, UpdateLog, BayesianTeamStateRow, ParlayBet, ParlayLeg,
+    Competition, UpdateLog, BayesianTeamStateRow, ParlayBet, ParlayLeg, PriceLog,
 )
 from .updater import run_full_update
 from .scheduler import start_scheduler, next_run_info
 from .model import expected_value, kelly_pct, BayesianTeamState, parlay_ev_and_risk, suggest_parlays
+from .ev_evidence import (
+    bet_advisory, parlay_advisory, price_capture, reality_check,
+    _roi_at_capture, CAPTURE_BY_LEGS, TYPICAL_PARLAY_MARGIN_PER_LEG,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -794,6 +798,121 @@ def get_score_distribution(match_id: int, goals_threshold: float = 2.5, db: Sess
         "team1_goals_under_threshold": dist["team1_goals_under"].get(goals_threshold),
         "team1_goals_over_threshold": dist["team1_goals_over"].get(goals_threshold),
     }
+
+
+# ══════════════════════════════════════════════════════════
+# 价格策略（热门-冷门偏差）
+# ══════════════════════════════════════════════════════════
+# 这一段跟上面所有基于模型的端点是**两套独立的东西**。
+# handoff/09 用 141,287 场证明模型对市场价格的增量信息为零，所以
+# 这里的判断完全不看模型概率，只看赔率本身落在哪个档、以及你拿到的价有多好。
+# 详见 app/ev_evidence.py 的模块注释。
+
+class StrategyInput(BaseModel):
+    odds: float                                  # 你实际能下到的赔率
+    market_avg: Optional[float] = None           # 市场平均赔率
+    market_best: Optional[float] = None          # 全市场最高赔率
+
+
+@app.post("/api/strategy/evaluate")
+def strategy_evaluate(payload: StrategyInput, db: Session = Depends(get_db)):
+    """单注评估：这个赔率在偏差的哪一侧，你的价够不够格。"""
+    adv = bet_advisory(payload.odds, payload.market_avg, payload.market_best)
+    return {
+        **adv,
+        "reality_check": reality_check(),
+        "capture_table": {str(k): v for k, v in CAPTURE_BY_LEGS.items()},
+    }
+
+
+class StrategyParlayInput(BaseModel):
+    leg_edges: list[float]                       # 各腿的单注预期 ROI
+    margin_per_leg: float = TYPICAL_PARLAY_MARGIN_PER_LEG
+
+
+@app.post("/api/strategy/parlay")
+def strategy_parlay(payload: StrategyParlayInput):
+    """串关评估：各腿优势复合 vs 平台串关抽水，谁大。"""
+    return parlay_advisory(payload.leg_edges, payload.margin_per_leg)
+
+
+class PriceLogInput(BaseModel):
+    match_desc: Optional[str] = None
+    platform: str = "bk8"
+    selection: Optional[str] = None
+    my_odds: float
+    market_avg: float
+    market_best: float
+    note: Optional[str] = None
+
+
+@app.post("/api/price-log")
+def create_price_log(payload: PriceLogInput, db: Session = Depends(get_db)):
+    f = price_capture(payload.my_odds, payload.market_avg, payload.market_best)
+    row = PriceLog(
+        match_desc=payload.match_desc, platform=payload.platform,
+        selection=payload.selection, my_odds=payload.my_odds,
+        market_avg=payload.market_avg, market_best=payload.market_best,
+        capture=f, note=payload.note,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "capture": f}
+
+
+@app.get("/api/price-log")
+def list_price_log(db: Session = Depends(get_db)):
+    """返回全部观测，外加你这个平台的价格捕获率汇总。
+
+    汇总是这套东西的核心输出：f 决定策略是正是负，而 f 只能靠实测累积。
+    样本太少时明确说「还不够」，不给一个会被当真的数字。
+    """
+    rows = db.query(PriceLog).order_by(desc(PriceLog.logged_at)).all()
+    vals = [r.capture for r in rows if r.capture is not None]
+
+    summary = {"n": len(vals), "mean_capture": None, "se": None,
+               "verdict": "样本不足", "expected_roi": None, "enough": False}
+    if vals:
+        import statistics
+        m = statistics.fmean(vals)
+        summary["mean_capture"] = round(m, 3)
+        if len(vals) >= 2:
+            sd = statistics.stdev(vals)
+            summary["se"] = round(sd / (len(vals) ** 0.5), 3)
+        # 20 条以下不下结论：f 的逐场波动很大，少量样本给出的均值会误导
+        if len(vals) >= 20:
+            summary["enough"] = True
+            summary["expected_roi"] = round(_roi_at_capture(m), 4)
+            if m >= 0.6:
+                summary["verdict"] = f"捕获率 {m:.0%}——这个平台的价格够用，策略成立"
+            elif m <= 0.2:
+                summary["verdict"] = f"捕获率 {m:.0%}——价格太差，任何腿数都是亏的，不要做"
+            else:
+                summary["verdict"] = (f"捕获率 {m:.0%}——落在说不准的区间。"
+                                      f"实测噪声在这一带盖过了信号，建议再记 20 条，"
+                                      f"或者换个价格更好的平台")
+        else:
+            summary["verdict"] = f"已记录 {len(vals)} 条，满 20 条才下结论"
+
+    return {
+        "rows": [{"id": r.id, "logged_at": r.logged_at.isoformat() if r.logged_at else None,
+                  "match_desc": r.match_desc, "platform": r.platform,
+                  "selection": r.selection, "my_odds": r.my_odds,
+                  "market_avg": r.market_avg, "market_best": r.market_best,
+                  "capture": r.capture, "note": r.note} for r in rows],
+        "summary": summary,
+    }
+
+
+@app.delete("/api/price-log/{log_id}")
+def delete_price_log(log_id: int, db: Session = Depends(get_db)):
+    row = db.query(PriceLog).filter_by(id=log_id).first()
+    if not row:
+        raise HTTPException(404, "Not found")
+    db.delete(row)
+    db.commit()
+    return {"deleted": log_id}
 
 
 # ══════════════════════════════════════════════════════════

@@ -216,9 +216,26 @@ def parlay_advisory(leg_edges: list, margin_per_leg: float = TYPICAL_PARLAY_MARG
            "breakeven_leg_edge": round(margin_per_leg / (1 - margin_per_leg), 4)}
 
     if worst_leg <= 0:
+        # 注意：有非正的腿，不等于合计就是负的——正腿够强时合计仍可能为正。
+        # 第一版这里硬写了「只会亏得更快」，但同时显示出 +0.43% 的合计，自相矛盾。
+        # 正确的建议跟合计正负无关：非正的腿在拖后腿，去掉它一定更好。
+        keep = [e for e in leg_edges if e > 0]
+        gross_keep = 1.0
+        for e in keep:
+            gross_keep *= (1 + e)
+        net_keep = gross_keep * (1 - margin_per_leg) ** len(keep) - 1 if keep else None
         out["level"] = "avoid"
-        out["text"] = (f"有腿的单注预期是 {worst_leg:+.2%}（非正）。负优势串起来同样按乘法放大："
-                       f"{n} 腿合计 {net:+.2%}。串关不会把亏钱的注变成赚钱的注，只会亏得更快。")
+        out["net_edge_without_bad_legs"] = round(net_keep, 4) if net_keep is not None else None
+        bad_n = n - len(keep)
+        if not keep:
+            out["text"] = (f"{bad_n} 条腿全都是非正的（最差 {worst_leg:+.2%}）。"
+                           f"负优势串起来按乘法放大，{n} 腿合计 {net:+.2%}。"
+                           f"串关不会把亏钱的注变成赚钱的注。")
+        else:
+            out["text"] = (f"有 {bad_n} 条腿的单注预期非正（最差 {worst_leg:+.2%}），在拖后腿。"
+                           f"当前 {n} 腿合计 {net:+.2%}；去掉那 {bad_n} 条之后，"
+                           f"剩下 {len(keep)} 腿是 {net_keep:+.2%}。"
+                           f"把负腿删掉一定更好——串关是乘法，一条负腿会按比例削掉整串的期望。")
         return out
 
     if net <= 0:

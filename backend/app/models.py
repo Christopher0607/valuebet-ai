@@ -230,6 +230,32 @@ class UpdateLog(Base):
     detail = Column(String, nullable=True)
 
 
+class PriceLog(Base):
+    """价格捕获率的观测记录。
+
+    为什么需要这张表：handoff/09 确认的赚钱结构是「押热门 + 拿到好价」，
+    而能不能赚钱几乎完全由**你自己平台的价格有多好**决定——
+    捕获率 f=0 时 ROI -1.43%，f=1 时 +1.67%，同一个策略两个方向。
+
+    f 无法从公开数据推断，因为它取决于你用哪个平台。所以只能实测：
+    每次下注前把三个价记下来，累积几十条之后 f 的均值就稳定了。
+    这张表存的就是这些观测。
+
+    f = (你的赔率 - 市场平均) / (市场最高 - 市场平均)
+    """
+    __tablename__ = "price_logs"
+    id = Column(Integer, primary_key=True)
+    logged_at = Column(DateTime, default=datetime.utcnow)
+    match_desc = Column(String, nullable=True)        # 自由文本，方便回头核对
+    platform = Column(String, default="bk8")
+    selection = Column(String, nullable=True)         # 'home' | 'draw' | 'away'
+    my_odds = Column(Float, nullable=False)
+    market_avg = Column(Float, nullable=False)
+    market_best = Column(Float, nullable=False)
+    capture = Column(Float, nullable=True)            # 算出来的 f，存下来免得每次重算
+    note = Column(String, nullable=True)
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
 
