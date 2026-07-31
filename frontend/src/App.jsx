@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const API = "http://127.0.0.1:8000/api";
+// 打包后走同源相对路径，不写死主机名——后端本来就在托管这份前端，
+// 所以页面从哪个地址打开，API 就跟着走到哪台机器。
+// 这是手机能用的前提：写死 127.0.0.1 的话，手机上那个地址指的是手机自己。
+// vite 开发服务器（5173）是另一个源，那时才需要显式指向后端。
+const API = import.meta.env.DEV ? "http://127.0.0.1:8000/api" : "/api";
 
 async function api(path, opts) {
   const res = await fetch(API + path, {
@@ -137,9 +141,22 @@ export default function App() {
           <div style={{ fontSize: 32, marginBottom: 12 }}>⚠️</div>
           <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 8 }}>无法连接本地后端</div>
           <div style={{ fontSize: 13, color: C.textDim, lineHeight: 1.7, marginBottom: 16 }}>
-            前端正常运行，但无法访问 <code style={{ background: C.bg, padding: "2px 5px", borderRadius: 4 }}>http://127.0.0.1:8000</code>。
-            请确认后端已启动：在 <code style={{ background: C.bg, padding: "2px 5px", borderRadius: 4 }}>backend/</code> 目录运行
-            <code style={{ display: "block", background: C.bg, padding: "8px 10px", borderRadius: 6, marginTop: 8 }}>uvicorn app.main:app --reload --port 8000</code>
+            前端正常运行，但无法访问 <code style={{ background: C.bg, padding: "2px 5px", borderRadius: 4 }}>{API}</code>。
+            {/* 手机上不能提示 127.0.0.1——那指的是手机自己。这里回显真实用到的地址，
+                并按「是不是从别的设备打开的」给不同的排查方向。 */}
+            {typeof window !== "undefined" && !["localhost", "127.0.0.1"].includes(window.location.hostname) ? (
+              <>
+                <br />你是从另一台设备打开的，请检查：跑服务的电脑是否开着、
+                两台设备是否连同一个 Wi-Fi、以及电脑防火墙是否放行了 8000 端口。
+                服务必须以 <code style={{ background: C.bg, padding: "2px 5px", borderRadius: 4 }}>--host 0.0.0.0</code> 启动
+                （用 <code style={{ background: C.bg, padding: "2px 5px", borderRadius: 4 }}>start.py</code> 的话已经是了）。
+              </>
+            ) : (
+              <>
+                请确认后端已启动：在 <code style={{ background: C.bg, padding: "2px 5px", borderRadius: 4 }}>backend/</code> 目录运行
+                <code style={{ display: "block", background: C.bg, padding: "8px 10px", borderRadius: 6, marginTop: 8 }}>uvicorn app.main:app --host 0.0.0.0 --port 8000</code>
+              </>
+            )}
           </div>
           <button onClick={loadAll} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: C.accent, color: C.bg, fontWeight: 700, fontSize: 13 }}>
             重试连接
@@ -204,7 +221,7 @@ export default function App() {
 
       {/* Stats bar */}
       {backtest && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", background: C.border, gap: 1 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", background: C.border, gap: 1 }}>
           {[
             { v: `${backtest.correct}/${backtest.total}`, l: "预测正确", c: C.blue },
             { v: pct(backtest.accuracy), l: "准确率", c: backtest.accuracy > 0.6 ? C.accent : C.gold },
@@ -293,7 +310,7 @@ export default function App() {
         {!loading && tab === "bets" && settings && (
           <div>
             <SL>虚拟下注 · 起始 {(+settings.bankroll_total).toLocaleString()} 单位</SL>
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 12 }}>
               <Stat label="总注数" val={bets.length} color={C.blue} />
               <Stat label="赢注" val={bets.filter(b => b.result === "win").length} color={C.accent} />
               <Stat label="待结算" val={bets.filter(b => b.result === "pending").length} color={C.gold} />
@@ -385,7 +402,7 @@ function SettingsPanel({ settings, onSave, onClose }) {
           <span>⚙ 资金与凯利设置</span>
           <span onClick={onClose} style={{ cursor: "pointer", color: C.textDim, fontSize: 16 }}>✕</span>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10 }}>
           <div>
             <div style={{ fontSize: 10, color: C.textDim, marginBottom: 4 }}>总资金</div>
             <input type="number" value={d.bankroll_total} onChange={e => setD(x => ({ ...x, bankroll_total: +e.target.value }))} style={inp} />
@@ -519,7 +536,7 @@ function MatchCard({ match, settings, onRefresh }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1, background: C.border }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 1, background: C.border }}>
         {[
           { label: match.team1, prob: mdl.prob_home, xg: mdl.xg_home },
           { label: "平局", prob: mdl.prob_draw, xg: null },
@@ -539,7 +556,7 @@ function MatchCard({ match, settings, onRefresh }) {
       {open && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: "12px 14px", background: C.surface }}>
           <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8 }}>输入赔率，系统计算真实期望值：</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 7, alignItems: "flex-end", marginBottom: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 7, alignItems: "flex-end", marginBottom: 10 }}>
             {[
               { label: match.team1, val: oHome, set: setOHome },
               { label: "平局", val: oDraw, set: setODraw },
@@ -558,7 +575,7 @@ function MatchCard({ match, settings, onRefresh }) {
 
           {calc && (
             <div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 7, marginBottom: 10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 7, marginBottom: 10 }}>
                 {[
                   { key: "home", label: match.team1, evVal: calc.ev_home, kPct: calc.kelly_home, kAmt: calc.kelly_home_amount, odds: calc.h },
                   ...(calc.d ? [{ key: "draw", label: "平局", evVal: calc.ev_draw, kPct: calc.kelly_draw, kAmt: calc.kelly_draw_amount, odds: calc.d }] : []),
@@ -625,7 +642,7 @@ function RealBetsTab({ realBets, bankroll, settings }) {
       <div style={{ background: C.purpleDim, border: `1px solid ${C.purple}44`, borderRadius: 8, padding: "9px 13px", fontSize: 11, color: C.purple, marginBottom: 12 }}>
         💡 在「预测」页点「💵 实盘」按钮记录你真实下的注。比赛结束后系统每12小时自动结算盈亏。
       </div>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 12 }}>
         <Stat label="总注数" val={realBets.length} color={C.purple} />
         <Stat label="赢注" val={settled.filter(b => b.result === "win").length} color={C.accent} />
         <Stat label="待结算" val={pending.length} color={C.gold} />
@@ -1069,7 +1086,7 @@ function StrategyTab() {
     <div style={{ display: "grid", gap: 12 }}>
       <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14 }}>
         <SL>输入赔率</SL>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginTop: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 8 }}>
           <div><div style={lbl}>你的平台赔率 *</div>
             <input style={inp} value={odds} onChange={e => setOdds(e.target.value)} placeholder="1.45" inputMode="decimal" /></div>
           <div><div style={lbl}>市场平均赔率</div>
@@ -1112,7 +1129,7 @@ function StrategyTab() {
               ＋ 加入串关
             </button>
             <input value={desc} onChange={e => setDesc(e.target.value)} placeholder="比赛备注（选填）"
-                   style={{ ...inp, width: 180, fontSize: 11, fontWeight: 600 }} />
+                   style={{ ...inp, flex: "1 1 140px", minWidth: 0, fontSize: 11, fontWeight: 600 }} />
             <button disabled={saving || !(parseFloat(avg) > 1 && parseFloat(best) > 1)} onClick={saveLog}
                     style={{ padding: "7px 13px", borderRadius: 7, fontSize: 11, fontWeight: 800,
                              border: `1px solid ${C.blue}`, background: C.blueDim, color: C.blue }}>
@@ -1145,7 +1162,7 @@ function StrategyTab() {
             ))}
           </div>
           <div style={{ ...lbl, marginTop: 6 }}>平台串关抽水（每腿）</div>
-          <select value={margin} onChange={e => setMargin(+e.target.value)} style={{ ...inp, width: 260, fontSize: 12 }}>
+          <select value={margin} onChange={e => setMargin(+e.target.value)} style={{ ...inp, maxWidth: 300, fontSize: 12 }}>
             <option value={0}>0%（串关赔率 = 各腿相乘）</option>
             <option value={0.01}>1%</option>
             <option value={0.02}>2%（多数平台）</option>

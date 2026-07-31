@@ -97,7 +97,9 @@ f=0 时 ROI -3.54%，f=0.8 才盈亏平衡，f=1.0 时 +0.91%。
 ```bash
 # 后端
 cd backend && pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# --host 0.0.0.0 是手机能连的前提。只绑 127.0.0.1 的话，同 Wi-Fi 的其他设备连不进来。
+# 前端打包后走同源相对路径 /api，所以页面从哪个地址打开、API 就跟到哪台机器，不用改配置。
 
 # 前端
 cd frontend && npm install && npm run dev

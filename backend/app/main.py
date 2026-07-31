@@ -30,9 +30,14 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="ValueBet Local API")
 
+# 打包后的前端由本进程同源托管，手机访问走的是同源请求，不需要 CORS。
+# 这里只为「开发时用 vite 热更新」放行：本机，外加局域网私有网段的 5173，
+# 方便在手机上调试开发版。刻意不写 allow_origins=["*"]——服务现在绑在
+# 0.0.0.0，同网段的任何设备都能访问，没必要再把跨域也全开。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # Vite dev server
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origin_regex=r"http://(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):5173",
     allow_methods=["*"],
     allow_headers=["*"],
 )

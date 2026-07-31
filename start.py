@@ -25,6 +25,24 @@ PORT = 8000
 URL = f"http://127.0.0.1:{PORT}"
 
 
+def lan_ip():
+    """本机在局域网里的地址，手机要用这个连。
+
+    不做真的联网，只是建一个 UDP socket 让系统选出默认出口网卡，
+    再问它本地地址是什么。比 gethostbyname(hostname) 可靠——后者在很多
+    机器上会返回 127.0.0.1，那样手机就连不上。
+    """
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))       # 不发数据，只为了确定出口网卡
+        return s.getsockname()[0]
+    except Exception:
+        return None
+    finally:
+        s.close()
+
+
 def run(cmd, cwd=None, check=True):
     print(f"  $ {' '.join(cmd)}")
     r = subprocess.run(cmd, cwd=cwd)
@@ -80,7 +98,13 @@ def main():
     ensure_backend_deps()
     ensure_frontend_built()
 
-    print(f"\n🚀 启动服务 → {URL}")
+    ip = lan_ip()
+    print(f"\n🚀 启动服务")
+    print(f"   本机  → {URL}")
+    if ip:
+        print(f"   手机  → http://{ip}:{PORT}    （手机要连同一个 Wi-Fi）")
+    else:
+        print("   手机  → 没能识别本机局域网地址，可以自己查（ipconfig / ifconfig）")
     print("   （关掉这个窗口就停止服务；12小时自动更新只在窗口开着时有效）\n")
 
     threading.Thread(target=open_browser_when_ready, daemon=True).start()
@@ -89,7 +113,11 @@ def main():
     os.chdir(BACKEND)          # 数据库文件跟着后端目录走
     import uvicorn
     from app.main import app
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    # 绑 0.0.0.0 而不是 127.0.0.1，否则只有本机连得上，手机连不进来。
+    # 这是局域网内可访问，不是公网——但也意味着同一个 Wi-Fi 下的其他设备
+    # 都能打开这个页面，页面里有你的实盘记录。在不信任的网络（咖啡厅、
+    # 公共 Wi-Fi）下不要这样跑。
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")
 
 
 if __name__ == "__main__":
