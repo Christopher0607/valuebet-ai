@@ -108,16 +108,65 @@ def _seed_default_settings():
 # STATUS
 # ══════════════════════════════════════════════════════════
 
+# updater.run_full_update() 实际会产出四种状态，但 models.py 里 UpdateLog.status
+# 那一行的注释只写了 'ok' | 'error'，于是 /api/status 把四种状态原样丢给前端、
+# 前端也就只会分「有没有报错」两种。后果是**部分失败长得跟全部成功一模一样**：
+# 某个赛事的数据源 404（休赛期新赛季文件还没发布是常态），updater 已经老老实实
+# 把 status 记成 'partial'、把失败的赛事列进 detail 了，界面上却照样是绿的，
+# 用户看到的是「更新成功」+ 少了一整个联赛的赛程，还以为是那个联赛没有比赛。
+#
+# 这张表是状态语义的唯一权威处：前端只读 severity/label，不要自己去 if 状态字符串；
+# updater 以后新增状态值也只改这一处。
+#
+# 'skipped' 的特殊情况（这是 updater.py 现存的一个局限，不是这里的疏漏）：
+# run_full_update() 抢不到并发锁时**直接 return，压根不写 UpdateLog 行**，
+# 所以 /api/status 永远读不到 'skipped'——它只会出现在 POST /api/update-now
+# 的即时返回值里。这里仍然保留这一项，是为了让前端能用同一张表去解释
+# update-now 的返回值。要让 /api/status 也能看到 skipped，得改 updater.py
+# 让它落一行日志，那个文件不在本次改动范围内，先把限制写清楚。
+_UPDATE_STATUS_MEANINGS = {
+    "ok":      {"severity": "ok",      "label": "全部赛事更新成功"},
+    "partial": {"severity": "warning", "label": "部分赛事抓取失败，其余赛事已更新"},
+    "error":   {"severity": "error",   "label": "更新失败，数据可能是旧的"},
+    "skipped": {"severity": "warning", "label": "上一次更新还在跑，本次被跳过（数据没变）"},
+}
+
+
 @app.get("/api/status")
 def status(db: Session = Depends(get_db)):
     last_run = db.query(UpdateLog).order_by(desc(UpdateLog.ran_at)).first()
+    raw_status = last_run.status if last_run else None
+
+    if last_run is None:
+        meaning = {"severity": "unknown", "label": "后端还没有跑过更新"}
+    else:
+        meaning = _UPDATE_STATUS_MEANINGS.get(
+            raw_status,
+            # 认不出来的状态不要静悄悄当成正常，否则以后 updater 加了新状态，
+            # 这里又会退回到「部分失败看起来像成功」的老毛病
+            {"severity": "unknown", "label": f"未知状态 '{raw_status}'"},
+        )
+
     return {
         "last_update": last_run.ran_at.isoformat() if last_run else None,
-        "last_status": last_run.status if last_run else None,
+        "last_status": raw_status,               # 原字符串，老前端还在读，只增不改
         "last_detail": last_run.detail if last_run else None,
+        # 下面几个是新增的：把「这次更新到底算成功还是算警告」讲明白
+        "last_severity": meaning["severity"],    # 'ok' | 'warning' | 'error' | 'unknown'
+        "last_status_label": meaning["label"],
+        "last_ok": raw_status == "ok",           # 只有全绿才 True——partial 不是成功
+        "last_counts": {
+            "matches_updated": last_run.matches_updated,
+            "predictions_updated": last_run.predictions_updated,
+            "bets_resolved": last_run.bets_resolved,
+        } if last_run else None,
+        "status_meanings": _UPDATE_STATUS_MEANINGS,
         "next_scheduled_update": next_run_info(),
         "note": "next_scheduled_update is null if this backend process was just restarted — "
                 "the schedule only exists while this process is running.",
+        "status_note": "last_status 可能是 ok / partial / error；partial 表示有赛事抓取失败，"
+                       "失败清单在 last_detail 里。skipped 只会出现在 POST /api/update-now 的"
+                       "返回值中（并发跳过时 updater 不写日志行），这里读不到。",
     }
 
 
@@ -161,12 +210,20 @@ def list_matches(status_filter: Optional[str] = None, competition_id: Optional[i
         q = q.filter(Match.competition_id == competition_id)
     matches = q.order_by(Match.date).all()
 
+    # 赛事名一次性查出来做成字典，不要在循环里 m.competition.name 那样取——
+    # 那是 lazy load，1739 场比赛就是 1739 次额外查询（N+1）。
+    # 显示名的取法跟 /api/backtest-summary 保持一致：优先中文名，没有才退回英文，
+    # 两处不一致的话前端按赛事分组时会出现「英超」和「English Premier League」
+    # 两个看起来不同、其实是同一个赛事的分组。
+    comp_names = {c.id: (c.name_zh or c.name) for c in db.query(Competition).all()}
+
     out = []
     for m in matches:
         pred = db.query(Prediction).filter_by(match_id=m.id).first()
         latest_odds = db.query(Odds).filter_by(match_id=m.id).order_by(desc(Odds.recorded_at)).first()
         out.append({
             "id": m.id, "competition_id": m.competition_id,
+            "competition_name": comp_names.get(m.competition_id),
             "date": m.date.isoformat(), "team1": m.team1, "team2": m.team2,
             "score1": m.score1, "score2": m.score2,
             "round": m.round, "grp": m.grp, "ground": m.ground, "status": m.status,
@@ -261,6 +318,10 @@ def _bet_dict(b: Bet):
     m = b.match
     return {
         "id": b.id, "match_id": b.match_id,
+        # bets 表本身没有 competition_id 这一列（跟 real_bets 不同），赛事只能顺着
+        # match 取。少了这个字段，虚拟盘那一页就没有任何办法按赛事分组或筛选——
+        # 现在库里 6 个赛事 1739 场比赛混在一张表里，不给赛事就只是一堆队名。
+        "competition_id": m.competition_id if m else None,
         "team1": m.team1 if m else None, "team2": m.team2 if m else None, "date": m.date.isoformat() if m else None,
         "outcome": b.outcome, "stake": b.stake, "odds_used": b.odds_used,
         "ev_at_bet": b.ev_at_bet, "kelly_pct": b.kelly_pct, "result": b.result, "pnl": b.pnl,
@@ -307,6 +368,13 @@ def _real_bet_dict(b: RealBet):
     m = b.match
     return {
         "id": b.id, "match_id": b.match_id,
+        # real_bets 表有自己的 competition_id 列，但它是 nullable 的，而
+        # RealBetInput 里这个字段是 Optional——前端不传就是 NULL。所以读的时候
+        # 要往 match 上兜一层，否则历史注单（以及任何没传该字段的客户端写进来的
+        # 注单）在实盘页会全部落进「未知赛事」，按赛事分组直接失效。
+        # 用注单自己存的值优先：万一将来出现「注单归属赛事 ≠ 比赛所属赛事」的
+        # 情况（比如同一场比赛在两个赛事里都登记过），显式写进来的那个才是准的。
+        "competition_id": b.competition_id if b.competition_id is not None else (m.competition_id if m else None),
         "team1": m.team1 if m else None, "team2": m.team2 if m else None, "date": m.date.isoformat() if m else None,
         "platform": b.platform, "outcome": b.outcome, "stake_real": b.stake_real, "currency": b.currency,
         "odds_used": b.odds_used, "ev_at_bet": b.ev_at_bet,
@@ -320,6 +388,15 @@ def _real_bet_dict(b: RealBet):
 @app.post("/api/real-bets")
 def create_real_bet(payload: RealBetInput, db: Session = Depends(get_db)):
     data = payload.dict()
+
+    # 前端没传赛事就从比赛回填，把值真的写进库里，而不是只在读的时候兜底。
+    # 差别在于：只兜底的话 real_bets.competition_id 永远是 NULL，以后想直接用
+    # SQL 按赛事筛实盘注单（比如「只看欧冠的实盘 ROI」）会一条都查不到。
+    if data.get("competition_id") is None:
+        m = db.query(Match).filter_by(id=data["match_id"]).first()
+        if m:
+            data["competition_id"] = m.competition_id
+
     kelly_amt = data.get("kelly_suggested_amount")
     followed = None
     if kelly_amt:
