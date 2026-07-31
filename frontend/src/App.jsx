@@ -127,7 +127,13 @@ export default function App() {
     await loadAll();
   }
 
-  const upcoming = matches.filter(m => m.status === "upcoming");
+  // 比赛日期已经过去、却还挂着 upcoming 的，是抓不到比分留下的陈旧记录，
+  // 不是即将赛事。实测撞到过：2025-05-31 的欧冠决赛（PSG vs 国米）因为没有
+  // 比分，一直被当成「接下来 1 场」显示，而那已经是 14 个月前的事。
+  // 把它们分出来单独提示，而不是混进 upcoming 里让人以为有比赛可下。
+  const _today = new Date().toISOString().slice(0, 10);
+  const upcoming = matches.filter(m => m.status === "upcoming" && m.date >= _today);
+  const stale    = matches.filter(m => m.status === "upcoming" && m.date < _today);
   const played   = matches.filter(m => m.status === "played");
   // 顶部统计栏取第一个赛事的数字。刻意不做跨赛事求和/平均——后端已经
   // 拆开了，前端再合并回去等于把刚修的 bug 重新引入一遍。
@@ -249,7 +255,7 @@ export default function App() {
         {!loading && tab === "upcoming" && settings && (
           <div>
             <SL>接下来 {upcoming.length} 场 · 资金 {(+settings.bankroll_total).toLocaleString()} · {(settings.kelly_fraction * 100).toFixed(0)}% 凯利</SL>
-            {upcoming.length === 0 && <Empty text="暂无即将赛事，或数据还未抓取——点顶部「立即更新」试试" />}
+            {upcoming.length === 0 && <NoFixtures played={played} stale={stale} />}
             {upcoming.map(m => (
               <MatchCard key={m.id} match={m} settings={settings} onRefresh={loadAll} />
             ))}
@@ -1260,6 +1266,41 @@ function Stat({ label, val, color, sub }) {
     </div>
   );
 }
+// 没有即将开赛的比赛时，先分清是「抓取坏了」还是「现在真的没有比赛」。
+// 原来那句「或数据还未抓取——点顶部『立即更新』试试」在休赛期是误导：
+// 点了也没用，上游 openfootball 根本还没发布新赛季的赛程（实测 404）。
+// 库里有完赛数据就说明抓取是通的，那就该说清楚是休赛期，并告诉用户会自动接上。
+function NoFixtures({ played, stale = [] }) {
+  if (!played.length) {
+    return <Empty text="还没有任何比赛数据——点顶部「立即更新」抓一次" />;
+  }
+  const last = played.reduce((a, b) => (a.date > b.date ? a : b));
+  const days = Math.round((Date.now() - new Date(last.date + "T12:00:00")) / 86400000);
+  return (
+    <div style={{ textAlign: "center", padding: "34px 20px", color: C.textDim, lineHeight: 1.8 }}>
+      <div style={{ fontSize: 28, opacity: 0.35, marginBottom: 10 }}>🌱</div>
+      <div style={{ color: C.text, fontWeight: 700, marginBottom: 6 }}>休赛期，暂时没有比赛</div>
+      <div style={{ fontSize: 12, maxWidth: 420, margin: "0 auto" }}>
+        库里已有 <strong style={{ color: C.text }}>{played.length}</strong> 场完赛数据，
+        最后一场是 <strong style={{ color: C.text }}>{last.date}</strong>（{days} 天前），
+        所以抓取本身是正常的。新赛季的赛程数据源还没发布，
+        发布后系统会在下次更新时<strong style={{ color: C.text }}>自动接上</strong>，不需要改任何东西。
+      </div>
+      <div style={{ fontSize: 12, marginTop: 12, color: C.accent }}>
+        这期间「💰 价格策略」页照常可用——它只需要你手输赔率，不依赖赛程。
+      </div>
+      {stale.length > 0 && (
+        <div style={{ fontSize: 11, marginTop: 14, color: C.textDim, maxWidth: 420, margin: "14px auto 0",
+                      background: C.goldDim, border: `1px solid ${C.gold}33`, borderRadius: 8, padding: "9px 11px" }}>
+          另有 <strong style={{ color: C.gold }}>{stale.length}</strong> 场记录日期已过却没抓到比分
+          （最早 {stale.reduce((a, b) => (a.date < b.date ? a : b)).date}），
+          已从「接下来」里排除。它们多半是数据源缺了这场的比分，不影响其他功能。
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Empty({ text }) {
   return (
     <div style={{ textAlign: "center", padding: "36px 20px", color: C.textDim }}>
