@@ -158,6 +158,66 @@ def bet_advisory(odds: float, average_odds: Optional[float] = None,
     return out
 
 
+# 串关：各腿优势按乘法复合，但串关定价本身要收费。
+# 实测（强队、最优价、赔率<1.5 池，单腿 ROI +1.74%，各腿赔率直接相乘）：
+#   1腿 +1.70%   2腿 +3.48%   3腿 +4.74%   4腿 +6.69%   6腿 +10.75%
+# 复合是真的。但博彩公司串关定价通常低于赔率乘积，每腿再抽 1-3%，扣 2%/腿后：
+#   2腿 -0.51%   3腿 -0.68%   4腿 -1.08%
+# 也就是说单腿 1.74% 的优势撑不住 2%/腿的串关抽水。
+TYPICAL_PARLAY_MARGIN_PER_LEG = 0.02
+
+
+def parlay_advisory(leg_edges: list, margin_per_leg: float = TYPICAL_PARLAY_MARGIN_PER_LEG) -> dict:
+    """串关是否值得，取决于「单腿优势」和「串关每腿抽水」谁大。
+
+    leg_edges       各腿的单注预期 ROI（小数，例如 0.0174）
+    margin_per_leg  串关定价相对赔率乘积的折损，每腿。BK8 这类平台需要
+                    自己实测：拿几场比赛，比较平台给的串关总赔率和各腿赔率的乘积。
+
+    数学：各腿独立时，串关期望 = Π(1+e_i) × (1-m)^n - 1。
+    优势按乘法复合是真的（08 号文档的 -89.5% 是因为腿本身是负 EV，
+    负的同样按乘法复合），但抽水也按腿累加，两者赛跑。
+
+    已知的小偏差：这个闭式解假设各腿优势彼此独立。在真实注单池上做抽样模拟，
+    3 腿零抽水得到 +4.74%，本式给 +5.31%，差 0.57 个百分点——来源是池内
+    「赔率高低」和「命中率」之间的相关性，独立性假设没抓到。方向和量级是对的，
+    但别把这个数字当成精确到小数点后两位的预测。
+    """
+    n = len(leg_edges)
+    if n == 0:
+        return {"level": "none", "text": "没有腿"}
+    gross = 1.0
+    for e in leg_edges:
+        gross *= (1 + e)
+    net = gross * (1 - margin_per_leg) ** n - 1
+    gross_edge = gross - 1
+
+    # 单腿优势要大于串关每腿抽水，串关才有意义
+    worst_leg = min(leg_edges)
+    out = {"n_legs": n, "gross_edge": round(gross_edge, 4),
+           "net_edge": round(net, 4), "margin_per_leg": margin_per_leg,
+           "breakeven_leg_edge": round(margin_per_leg / (1 - margin_per_leg), 4)}
+
+    if worst_leg <= 0:
+        out["level"] = "avoid"
+        out["text"] = (f"有腿的单注预期是 {worst_leg:+.2%}（非正）。负优势串起来同样按乘法放大："
+                       f"{n} 腿合计 {net:+.2%}。串关不会把亏钱的注变成赚钱的注，只会亏得更快。")
+        return out
+
+    if net <= 0:
+        out["level"] = "avoid"
+        out["text"] = (f"各腿单独都是正的（合计毛优势 {gross_edge:+.2%}），但串关每腿抽水 "
+                       f"{margin_per_leg:.1%}，{n} 腿之后净 {net:+.2%}。"
+                       f"单腿优势要超过 {out['breakeven_leg_edge']:.2%} 串关才划算——"
+                       f"实测热门档只有 1.74%。分开下单场更好。")
+        return out
+
+    out["level"] = "ok"
+    out["text"] = (f"{n} 腿，毛优势 {gross_edge:+.2%}，扣掉每腿 {margin_per_leg:.1%} 的串关抽水后 "
+                   f"{net:+.2%}。注意中奖率随腿数急剧下降，方差远大于单场。")
+    return out
+
+
 def reality_check() -> dict:
     """这条路的三个现实约束，不该被界面上的正 ROI 数字盖掉。"""
     return {
