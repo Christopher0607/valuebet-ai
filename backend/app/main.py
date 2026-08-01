@@ -1034,4 +1034,16 @@ if os.path.isdir(_DIST):
 
     @app.get("/")
     def _serve_index():
-        return FileResponse(os.path.join(_DIST, "index.html"))
+        # index.html 必须禁用缓存。它是整个应用的入口，里面写死了带内容哈希的
+        # JS 文件名（index-CzXrH1SR.js 这种）。浏览器一旦缓存了旧的 index.html，
+        # 就会一直去加载旧的 JS——而如果用户是覆盖解压（没删旧文件夹），
+        # 旧 JS 还躺在 dist 里，于是新版本装好了却一直显示旧界面，
+        # 且看不出任何异常。实际踩过：赛事筛选功能已经发出去了，
+        # 手机上能看到，电脑上因为缓存了旧 index.html 而看不到。
+        #
+        # /assets 下的文件反而可以放心缓存——文件名带内容哈希，
+        # 内容变了文件名就变，不存在拿到旧内容的可能。
+        return FileResponse(
+            os.path.join(_DIST, "index.html"),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
