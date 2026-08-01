@@ -454,6 +454,15 @@ export default function App() {
           <div>
             <SL>接下来 {upcoming.length} 场 · 资金 {(+settings.bankroll_total).toLocaleString()} · {(settings.kelly_fraction * 100).toFixed(0)}% 凯利</SL>
             {upcoming.length === 0 && <NoFixtures played={played} stale={stale} />}
+            {/* MatchCard 在 match.prediction 为空时直接 return null。原来这里
+                没有对应的空状态，于是「有比赛但都还没算出预测」会表现成：
+                标题写着「接下来 1446 场」，底下一张卡都没有，页面看起来
+                像坏了。实际排查时就是这一步花了最久——界面什么都不说，
+                只能去翻数据库。现在把这个状态显式说出来。 */}
+            {upcoming.length > 0 && upcoming.every(m => !m.prediction) && (
+              <NoPredictions count={upcoming.length} status={status}
+                             updating={updating} onUpdateNow={triggerUpdate} />
+            )}
             {upcoming.map(m => (
               <MatchCard key={m.id} match={m} settings={settings} onRefresh={loadAll} />
             ))}
@@ -1656,6 +1665,44 @@ function NoFixtures({ played, stale = [] }) {
           已从「接下来」里排除。它们多半是数据源缺了这场的比分，不影响其他功能。
         </div>
       )}
+    </div>
+  );
+}
+
+// 有赛程、但一场都还没算出预测。
+//
+// 这个状态原来是完全不可见的：MatchCard 在没有预测时 return null，所以
+// 标题写着「接下来 1446 场」、底下空空如也，看起来像功能坏了。真实排查
+// 时也确实只能去翻数据库才知道是缺预测而不是缺赛程。
+//
+// 把后端最近一次更新的状态一并显示出来——预测生成是更新流程的最后一步，
+// 更新失败或者中途被打断，最先没有的就是它。
+function NoPredictions({ count, status, updating, onUpdateNow }) {
+  const sev = status?.last_severity;
+  return (
+    <div style={{ textAlign: "center", padding: "30px 20px", color: C.textDim, lineHeight: 1.8 }}>
+      <div style={{ fontSize: 28, opacity: 0.35, marginBottom: 10 }}>⏳</div>
+      <div style={{ color: C.text, fontWeight: 700, marginBottom: 6 }}>赛程已就位，模型还没算出预测</div>
+      <div style={{ fontSize: 12, maxWidth: 440, margin: "0 auto" }}>
+        库里有 <strong style={{ color: C.text }}>{count}</strong> 场即将进行的比赛，但它们还没有对应的预测，
+        所以这里暂时没有可展示的卡片。预测是更新流程的最后一步，
+        比赛数量多的时候要跑上一会儿。
+      </div>
+      <div style={{ fontSize: 12, marginTop: 12, maxWidth: 440, margin: "12px auto 0",
+                    background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px" }}>
+        后端最近一次更新：
+        <strong style={{ color: sev === "error" ? C.red : sev === "warning" ? C.gold : C.accent }}>
+          {status?.last_status_label || "还没有记录"}
+        </strong>
+        {status?.last_detail && <div style={{ marginTop: 4, color: C.textDim }}>{status.last_detail}</div>}
+        {status?.last_update && <div style={{ marginTop: 4, fontSize: 11 }}>{fdatetime(status.last_update)}</div>}
+      </div>
+      <button onClick={onUpdateNow} disabled={updating}
+        style={{ marginTop: 14, padding: "8px 18px", borderRadius: 8, border: "none",
+                 background: C.accent, color: C.bg, fontWeight: 700, fontSize: 13,
+                 opacity: updating ? 0.6 : 1 }}>
+        {updating ? "更新中…" : "立即更新"}
+      </button>
     </div>
   );
 }

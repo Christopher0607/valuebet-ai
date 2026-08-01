@@ -361,12 +361,20 @@ def fetch_upcoming(comp: models.Competition) -> list:
 def upsert_matches(db: Session, comp: models.Competition, played: list, upcoming: list) -> int:
     updated = 0
 
+    # 该赛事已有的比赛一次性读进字典，按 (日期, 主队, 客队) 索引。
+    # 原来是每场比赛发一次 filter_by(...).first()，一个赛季 380 场就是
+    # 380 次往返，六个赛事加起来近两千次。本地 SQLite 无感，云端远端
+    # Postgres 上这一步就要跑几十秒——而它排在生成预测的前面，整轮更新
+    # 越接近超时，就越容易在轮到预测之前先被打断。
+    existing_by_key = {
+        (mm.date, mm.team1, mm.team2): mm
+        for mm in db.query(models.Match).filter_by(competition_id=comp.id).all()
+    }
+
     for m in played:
         t1, t2, d = normalize_team_name(m["team1"]), normalize_team_name(m["team2"]), m["date"]
         s1, s2 = _extract_final_score(m["score"])
-        existing = db.query(models.Match).filter_by(
-            competition_id=comp.id, date=date_cls.fromisoformat(d), team1=t1, team2=t2
-        ).first()
+        existing = existing_by_key.get((date_cls.fromisoformat(d), t1, t2))
         if existing:
             if existing.score1 is None:
                 existing.score1, existing.score2 = s1, s2
