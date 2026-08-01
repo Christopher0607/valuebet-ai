@@ -515,13 +515,45 @@ def update_predictions(db: Session) -> int:
     matches = db.query(models.Match).all()
     # 一次性查出赛事表，循环里直接查字典，不要每场比赛都打一次数据库
     comp_by_id = {c.id: c for c in db.query(models.Competition).all()}
+
+    # 贝叶斯状态和已有预测也必须一次性取出来。原来是在循环里按 (队名, 赛事)
+    # 查两次贝叶斯状态、再查一次 Prediction —— 每场 3 次，三千多场就是
+    # 一万次往返。本地 SQLite 是进程内调用感觉不到，云端远端 Postgres 上
+    # 这个函数要跑好几分钟。
+    #
+    # 而下面只在**全部跑完之后**才 commit 一次。也就是说中途被超时掐断、
+    # 或者连接池把连接回收掉，这一万次工作全部回滚，一条预测都不落库——
+    # 而 upsert_matches 是单独提交的，比赛却已经存进去了。表现就是：
+    # 串关页列得出比赛（它不需要预测），单场预测页一张卡都不渲染
+    # （MatchCard 在 match.prediction 为空时直接 return null）。
+    bayes_by_key = {
+        (r.team_name, r.competition_id): r
+        for r in db.query(models.BayesianTeamStateRow).all()
+    }
+    pred_by_match = {p.match_id: p for p in db.query(models.Prediction).all()}
+
+    # commit() 默认会让 session 里所有已加载对象过期，下一次访问 m.team1
+    # 就得为那一行再发一次 SELECT。配合下面的分批提交，等于每提交一次就
+    # 把剩下的 Match 逐行重读一遍——分批提交本身又造出一个 N+1。
+    # 实测：1739 场比赛，开着它是 3024 次查询，关掉是 1745 次。
+    # 这里提交后不再依赖任何对象的新鲜度（循环只读 m 的固有字段），
+    # 所以关掉是安全的；退出时恢复原值，不影响调用方的 session。
+    prev_expire = db.expire_on_commit
+    db.expire_on_commit = False
+    try:
+        return _update_predictions_inner(db, matches, comp_by_id, bayes_by_key,
+                                         pred_by_match, BayesianTeamState)
+    finally:
+        db.expire_on_commit = prev_expire
+
+
+def _update_predictions_inner(db, matches, comp_by_id, bayes_by_key,
+                              pred_by_match, BayesianTeamState) -> int:
     updated = 0
     for m in matches:
         attack_override, defense_override = {}, {}
         for team_name in (m.team1, m.team2):
-            row = db.query(models.BayesianTeamStateRow).filter_by(
-                team_name=team_name, competition_id=m.competition_id
-            ).first()
+            row = bayes_by_key.get((team_name, m.competition_id))
             if row:
                 state = BayesianTeamState.from_dict({
                     "team_name": row.team_name,
@@ -540,10 +572,11 @@ def update_predictions(db: Session) -> int:
             scope=scope_for_competition(code),
             neutral=neutral_for_competition(code),
         )
-        row = db.query(models.Prediction).filter_by(match_id=m.id).first()
+        row = pred_by_match.get(m.id)
         if not row:
             row = models.Prediction(match_id=m.id)
             db.add(row)
+            pred_by_match[m.id] = row
 
         row.prob_home = pred["prob_home"]
         row.prob_draw = pred["prob_draw"]
@@ -562,6 +595,12 @@ def update_predictions(db: Session) -> int:
             row.rps = calc_rps([pred["prob_home"], pred["prob_draw"], pred["prob_away"]], actual)
 
         updated += 1
+        # 分批提交，而不是全部跑完才提交一次。中途出问题时已经算好的部分
+        # 能留下来，下一轮更新接着补剩下的；一次性提交则是全有或全无，
+        # 而"全无"在界面上表现为预测页整页空白，看起来像功能坏了。
+        if updated % 500 == 0:
+            db.commit()
+
     db.commit()
     return updated
 
