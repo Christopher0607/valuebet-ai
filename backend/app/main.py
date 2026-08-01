@@ -4,6 +4,7 @@ See README.md in the project root for full setup instructions.
 """
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
@@ -31,6 +32,11 @@ from .ev_evidence import (
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="ValueBet Local API")
+
+# /api/matches 一次返回全部比赛，实测 0.88 MB。本地无所谓，手机流量下
+# 明显能感觉到。JSON 压缩率很高（这份压完约十分之一），一行中间件的事。
+# 500 字节以下不压——小响应压完反而更大，还白搭 CPU。
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # 打包后的前端由本进程同源托管，手机访问走的是同源请求，不需要 CORS。
 # 这里只为「开发时用 vite 热更新」放行：本机，外加局域网私有网段的 5173，
@@ -259,10 +265,33 @@ def list_matches(status_filter: Optional[str] = None, competition_id: Optional[i
     # 两个看起来不同、其实是同一个赛事的分组。
     comp_names = {c.id: (c.name_zh or c.name) for c in db.query(Competition).all()}
 
+    # 预测和赔率也必须批量取。上面那段注释为赛事名避开了 N+1，紧接着的循环
+    # 却又犯了两次同样的错：每场比赛查一次 Prediction、再查一次 Odds，
+    # 1739 场就是 3478 次往返。
+    #
+    # 本地 SQLite 完全看不出来——它是进程内函数调用，几千次也就一秒。
+    # 换成云端的远端 Postgres，每次往返十几到几十毫秒，同一个接口要跑
+    # 几十秒甚至超时，页面就一直卡在「加载中」。这个 bug 只在部署后出现。
+    match_ids = [m.id for m in matches]
+
+    preds = {}
+    latest_odds_by_match = {}
+    # 分批：SQLite 的 IN 参数个数有上限（老版本 999），Postgres 宽松得多，
+    # 取小的那个才两边都安全
+    for i in range(0, len(match_ids), 900):
+        chunk = match_ids[i:i + 900]
+        for p in db.query(Prediction).filter(Prediction.match_id.in_(chunk)).all():
+            preds[p.match_id] = p
+        # 按 (match_id, recorded_at 倒序) 排好，每场第一条就是最新的那条赔率，
+        # setdefault 只保留第一条
+        for o in (db.query(Odds).filter(Odds.match_id.in_(chunk))
+                    .order_by(Odds.match_id, desc(Odds.recorded_at)).all()):
+            latest_odds_by_match.setdefault(o.match_id, o)
+
     out = []
     for m in matches:
-        pred = db.query(Prediction).filter_by(match_id=m.id).first()
-        latest_odds = db.query(Odds).filter_by(match_id=m.id).order_by(desc(Odds.recorded_at)).first()
+        pred = preds.get(m.id)
+        latest_odds = latest_odds_by_match.get(m.id)
         out.append({
             "id": m.id, "competition_id": m.competition_id,
             "competition_name": comp_names.get(m.competition_id),
