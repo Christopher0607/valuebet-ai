@@ -1,5 +1,37 @@
 # 部署到公网（Vercel + Railway + Supabase）
 
+## 📍 当前进度（2026-08，接手的人先看这段）
+
+代码侧**已经全部就绪并验证过**，剩下的全是在三个网页控制台里填环境变量。
+
+已确认的项目信息：
+- Supabase 组织 `ValueBetAi`，项目 `Valuebetai`
+- Project URL：`https://tsvdgrhrwhqdsamdpl….supabase.co`（前缀已确认，完整串在控制台）
+- Publishable key：`sb_publishable_PW3ah5HXgfgAhTNRFM98BA_IGvoaTQq`（公开值）
+- **新版密钥体系**（控制台显示 "Publishable and secret API keys"），
+  所以大概率是 ES256 非对称签名，走 JWKS 那条路
+
+还没拿到的：
+- [ ] 数据库连接串（Connect → Direct → **Session pooler**，不要 Direct connection，
+      那个是 IPv6 only、Railway 连不上）
+- [ ] 确认签名方式：浏览器打开
+      `https://<project>.supabase.co/auth/v1/.well-known/jwks.json?apikey=<publishable key>`
+      - 返回 `{"keys":[{"kty":"EC",...}]}` → 新版，配 `SUPABASE_URL` + `SUPABASE_ANON_KEY`
+      - 返回 `{"keys":[]}` → 旧版，改配 `SUPABASE_JWT_SECRET`
+
+  > 不带 `?apikey=` 会返回 `{"message":"No API key found in request"}`——
+  > Supabase 把整个 /auth/v1 放在 API 网关后面。后端取公钥时也必须带这个头，
+  > 已经处理（见 `backend/app/auth.py` 的 `_jwk_client`）。
+
+踩过并已修的坑（别再走一遍）：
+- Supabase 给的连接串是 `postgres://`，SQLAlchemy 2.x 只认 `postgresql://`
+- 直连 5432 是 IPv6 only，Railway 连不上，要用 pooler
+- JWKS 端点要 apikey 头
+- 只支持 HS256 的话新项目会全部 401，且报错看不出是算法问题
+
+---
+
+
 部署完就能在世界任何地方用，不需要家里电脑开着。
 
 **本地一键启动完全不受影响** —— 不配任何环境变量时，代码走 SQLite + 无认证，
