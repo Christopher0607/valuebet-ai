@@ -364,7 +364,7 @@ export default function App() {
             <div style={{ width: 32, height: 32, borderRadius: 8, background: `linear-gradient(135deg,${C.accent},${C.blue})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>⚽</div>
             <div>
               <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "-0.3px" }}>ValueBet 精算系统</div>
-              <div style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.7px" }}>本地版 · FastAPI + SQLite</div>
+              <div style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.7px" }}>{isAuthEnabled ? "云端版 · FastAPI + Postgres" : "本地版 · FastAPI + SQLite"}</div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
@@ -673,10 +673,10 @@ function StatusBanner({ status, updating, onUpdateNow }) {
     <div style={{ background: C.goldDim, borderBottom: `1px solid ${C.gold}44`, padding: "7px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 14, flexWrap: "wrap", fontSize: 11, color: C.gold }}>
       <span>
         {isFirstRun ? (
-          <>🖥️ 本地运行中 · 首次抓取数据中，几秒后自动刷新...</>
+          <>{isAuthEnabled ? "☁️ 云端运行中" : "🖥️ 本地运行中"} · 首次抓取数据中，几秒后自动刷新...</>
         ) : (
           <>
-            🖥️ 本地运行中 · 上次更新 {fdatetime(status.last_update)}
+            {isAuthEnabled ? "☁️ 云端运行中" : "🖥️ 本地运行中"} · 上次更新 {fdatetime(status.last_update)}
             {status.last_severity === "error" && <span style={{ color: C.red }}> · 更新失败: {status.last_detail}</span>}
             {status.last_severity === "warning" && <span style={{ color: C.gold }}> · ⚠ {status.last_status_label}{status.last_detail ? `：${status.last_detail}` : ""}</span>}
           </>
