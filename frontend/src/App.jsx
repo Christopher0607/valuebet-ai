@@ -628,8 +628,9 @@ function LoginScreen({ onSignedIn }) {
             <div style={{ color: C.text, wordBreak: "break-all", margin: "4px 0" }}>{supabaseUrl || "（未配置 VITE_SUPABASE_URL）"}</div>
             用的 key：<span style={{ color: C.text }}>{supabaseKeyHint || "（未配置）"}</span>
             <div style={{ marginTop: 6 }}>
-              去 Supabase 后台确认这两个来自**同一个项目**。不一致的话改 Vercel 的
-              环境变量，然后必须重新部署才生效。
+              去 Supabase 后台确认这两个来自<b style={{ color: C.text }}>同一个项目</b>——
+              地址里那串 ref 要跟后台项目的 ref 一致。改完 Vercel 的环境变量后
+              必须重新部署才生效。
             </div>
           </div>
         )}
