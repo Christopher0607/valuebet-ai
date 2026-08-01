@@ -59,6 +59,37 @@ const C = {
 const evc  = v => v > 0.04 ? C.accent : v > 0 ? C.gold : C.red;
 const evbg = v => v > 0.04 ? C.accentDim : v > 0 ? C.goldDim : C.redDim;
 
+// 上一次成功加载的数据，存在浏览器本地。
+//
+// 为什么要有它：每次打开页面都要等 8 个接口全部回来才有东西看，其中
+// /api/matches 是三千多场比赛。本地还好，云端要连远端 Postgres，
+// 每次进来都白等几秒——用户反馈的「每次进网页都会加载一次，很消耗时间」。
+//
+// 改成先把上次的数据画出来、同时在后台重新拉。数据可能旧几秒，但赛程和
+// 预测本来就是十二小时更新一次的东西，旧几秒没有任何影响；而「立刻有东西看」
+// 的差别很大。
+//
+// 按用户隔离：云端换账号登录时，绝不能读到上一个账号的实盘记录。
+// 退出登录时直接清掉。
+const CACHE_KEY = "vb_cache_v2";
+
+function readCache(userKey) {
+  try {
+    const c = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+    return c && c.user === userKey ? c : null;
+  } catch {
+    return null;              // 存的东西坏了就当没有，不要让它把整个页面拖挂
+  }
+}
+
+function writeCache(userKey, payload) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ user: userKey, at: Date.now(), ...payload }));
+  } catch {
+    // 配额满了（这份数据接近 1MB）就放弃缓存。它是纯优化，失败不该影响功能。
+  }
+}
+
 // ══════════════════════════════════════════════════════════
 export default function App() {
   const [tab, setTab]       = useState("upcoming");
@@ -72,6 +103,8 @@ export default function App() {
   const [bankroll, setBankroll] = useState(null);
   const [settings, setSettings] = useState(null);
   const [parlayBets, setParlayBets] = useState([]);
+  const [refreshing, setRefreshing] = useState(false);   // 用缓存先画出来、后台正在刷新
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const [showSett, setShowSett] = useState(false);
   const [loading, setLoading]   = useState(true);
   const [apiError, setApiError] = useState(null);
@@ -81,8 +114,11 @@ export default function App() {
   const [authReady, setAuthReady] = useState(!isAuthEnabled);
   const retryRef = useRef(0);
 
-  const loadAll = useCallback(async () => {
-    setLoading(true);
+  // silent：已经用缓存把界面画出来了，这一轮是后台刷新。
+  // 不能再翻回加载态——否则缓存刚画出来的内容立刻被 spinner 盖掉，
+  // 缓存等于白做（第一版就是这样，实测第二次打开仍然是空白页）。
+  const loadAll = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setApiError(null);
     try {
       const [st, all, bt, vb, rb, br, se, cp, pl] = await Promise.all([
@@ -111,6 +147,11 @@ export default function App() {
       setBankroll(br);
       setSettings(se);
       setParlayBets(pl || []);
+      setRefreshFailed(false);          // 这一轮成功了，清掉上一轮的失败标记
+      writeCache(session?.user?.id || "local", {
+        status: st, matches: all, backtest: bt.by_competition || [], competitions: cp || [],
+        bets: vb, realBets: rb, bankroll: br, settings: se, parlayBets: pl || [],
+      });
     } catch (e) {
       // 刚启动那十几秒后端可能还没就绪（uvicorn 还没绑定端口，或者首次
       // 全量更新正在写库）。直接甩「无法连接本地后端」会让人以为服务没起，
@@ -122,18 +163,21 @@ export default function App() {
       }
       if (retryRef.current < 6) {
         retryRef.current += 1;
-        setStarting(true);
-        setTimeout(() => loadAll(), 2500);
-        return;                       // 不要走 finally 里的 setLoading(false)
+        if (!silent) setStarting(true);
+        setTimeout(() => loadAll(silent), 2500);
+        return;
       }
-      setApiError(e.message);
-      setStarting(false);
+      // 后台刷新失败时不要把缓存内容换成错误页——旧数据比什么都没有有用。
+      // 只在横幅上说明一句，让用户知道看到的不是最新的。
+      if (silent) setRefreshFailed(true);
+      else { setApiError(e.message); setStarting(false); }
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
     retryRef.current = 0;
     setStarting(false);
-  }, []);
+  }, [session]);
 
   // 恢复已有会话，并把 authReady 置位。
   //
@@ -173,7 +217,22 @@ export default function App() {
   // 只在挂载时跑一次（那次还没登录），登录后界面会一直空着。
   useEffect(() => {
     if (isAuthEnabled && (!authReady || !session)) return;
-    loadAll();
+    // 有缓存就先画出来，页面立刻可用；同时照常去后台拉最新的。
+    const cached = readCache(session?.user?.id || "local");
+    if (cached) {
+      setStatus(cached.status);
+      setMatches(cached.matches || []);
+      setBacktestByComp(cached.backtest || []);
+      setCompetitions(cached.competitions || []);
+      setBets(cached.bets || []);
+      setRealBets(cached.realBets || []);
+      setBankroll(cached.bankroll);
+      setSettings(cached.settings);
+      setParlayBets(cached.parlayBets || []);
+      setLoading(false);
+      setRefreshing(true);
+    }
+    loadAll(!!cached);
   }, [authReady, session, loadAll]);
 
   // If we land in the "first run still in flight" state (see StatusBanner),
@@ -384,7 +443,8 @@ export default function App() {
       `}</style>
 
       {/* Status banner - honest about what "automatic" means here */}
-      <StatusBanner status={status} updating={updating} onUpdateNow={triggerUpdate} />
+      <StatusBanner status={status} updating={updating} onUpdateNow={triggerUpdate}
+                    refreshing={refreshing} refreshFailed={refreshFailed} />
 
       {/* Header */}
       <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "11px 16px", position: "sticky", top: 0, zIndex: 30 }}>
@@ -405,7 +465,12 @@ export default function App() {
             </button>
             {isAuthEnabled && session && (
               <button
-                onClick={async () => { await signOut(); setSession(null); }}
+                onClick={async () => {
+                  // 缓存里有实盘记录和资金数字，退出时必须清掉——
+                  // 否则换个人在同一台设备上登录，先看到的是上一个人的数据
+                  try { localStorage.removeItem(CACHE_KEY); } catch {}
+                  await signOut(); setSession(null);
+                }}
                 title={session.user?.email}
                 style={{ padding: "6px 12px", borderRadius: 7, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11, fontWeight: 700 }}
               >
@@ -691,7 +756,7 @@ function LoginScreen({ onSignedIn }) {
   );
 }
 
-function StatusBanner({ status, updating, onUpdateNow }) {
+function StatusBanner({ status, updating, onUpdateNow, refreshing, refreshFailed }) {
   if (!status) return null;
 
   // On a truly fresh install, the startup run may still be in flight
@@ -701,6 +766,13 @@ function StatusBanner({ status, updating, onUpdateNow }) {
 
   return (
     <div style={{ background: C.goldDim, borderBottom: `1px solid ${C.gold}44`, padding: "7px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 14, flexWrap: "wrap", fontSize: 11, color: C.gold }}>
+      {(refreshing || refreshFailed) && (
+        <span style={{ color: refreshFailed ? C.red : C.textDim }}>
+          {refreshFailed
+            ? "⚠ 后台更新失败，显示的是上次的数据"
+            : "⟳ 显示的是上次的数据，正在后台更新…"}
+        </span>
+      )}
       <span>
         {isFirstRun ? (
           <>{isAuthEnabled ? "☁️ 云端运行中" : "🖥️ 本地运行中"} · 首次抓取数据中，几秒后自动刷新...</>
