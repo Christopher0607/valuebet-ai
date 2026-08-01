@@ -272,8 +272,12 @@ def get_active_competitions(db: Session):
     ).all()
 
 
-def _resolve_data_source(comp: models.Competition):
+def _resolve_data_source(comp: models.Competition, start_back: int = 0):
     """挑出这个赛事该用哪个文件，返回 (url, 格式)，格式是 "json" 或 "txt"。
+
+    start_back 表示「从当前赛季往前数第几季开始找」。默认 0 即当前赛季。
+    fetch_results 在当前赛季一场比分都没有（新赛季只发了赛程）时会用
+    start_back=1 再取一次，理由见那里的注释。
 
     世界杯的 data_source 是一个固定 URL（一届赛事，没有赛季概念）。
     俱乐部联赛存的是含 "{season}" 占位符的模板。
@@ -290,7 +294,7 @@ def _resolve_data_source(comp: models.Competition):
     key = comp.data_source.rstrip("/").rsplit("/", 1)[-1].removesuffix(".json")
     txt_template = _TXT_SOURCES.get(key)
 
-    start_year = int(guess_current_season().split("-")[0])
+    start_year = int(guess_current_season().split("-")[0]) - start_back
     for back in range(5):
         y = start_year - back
         season = f"{y}-{str(y + 1)[-2:]}"
@@ -309,14 +313,14 @@ def _resolve_data_source(comp: models.Competition):
     return comp.data_source.replace("{season}", f"{start_year}-{str(start_year + 1)[-2:]}"), "json"
 
 
-def _fetch_matches(comp: models.Competition) -> list:
+def _fetch_matches(comp: models.Competition, start_back: int = 0) -> list:
     """取回这个赛事的全部比赛记录，统一成 football.json 的形状。
 
     fetch_results 和 fetch_upcoming 原来各自跑一遍探测阶梯再各自 GET 一次
     ——同一个文件下载两遍，探测也做两遍。合并到这里，两边都只是在这份
     结果上做过滤。
     """
-    url, fmt = _resolve_data_source(comp)
+    url, fmt = _resolve_data_source(comp, start_back=start_back)
     r = requests.get(url, timeout=15)
     r.raise_for_status()
     if fmt == "txt":
@@ -328,7 +332,17 @@ def _fetch_matches(comp: models.Competition) -> list:
 
 
 def fetch_results(comp: models.Competition) -> list:
-    return [m for m in _fetch_matches(comp) if _extract_final_score(m.get("score")) is not None]
+    played = [m for m in _fetch_matches(comp) if _extract_final_score(m.get("score")) is not None]
+    if played or "{season}" not in comp.data_source:
+        return played
+
+    # 当前赛季一场比分都没有——新赛季刚发布赛程、还没开踢时就是这样。
+    # 这时要再往回取一季的结果，否则一个新建的库里联赛将没有任何历史比分：
+    # 回测页只剩世界杯和欧冠，贝叶斯状态也无从更新。
+    #
+    # 只在「当前赛季零结果」时才多跑这一次，赛季一开踢就不会再触发。
+    return [m for m in _fetch_matches(comp, start_back=1)
+            if _extract_final_score(m.get("score")) is not None]
 
 
 # 淘汰赛对阵还没确定时，openfootball 用 "Winner Match 73" / "Loser SF1" /
