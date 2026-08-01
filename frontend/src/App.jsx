@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { isAuthEnabled, supabase, getToken, signIn, signUp, signOut, supabaseUrl, supabaseKeyHint } from "./auth";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
@@ -463,9 +463,8 @@ export default function App() {
               <NoPredictions count={upcoming.length} status={status}
                              updating={updating} onUpdateNow={triggerUpdate} />
             )}
-            {upcoming.map(m => (
-              <MatchCard key={m.id} match={m} settings={settings} onRefresh={loadAll} />
-            ))}
+            <DayGroups matches={upcoming}
+              renderMatch={m => <MatchCard key={m.id} match={m} settings={settings} onRefresh={loadAll} />} />
           </div>
         )}
 
@@ -750,6 +749,104 @@ function SettingsPanel({ settings, onSave, onClose }) {
 }
 
 // ── Match Card ───────────────────────────────────────────────
+// 按比赛日期分组折叠。
+//
+// 起因：新赛季接进来之后「接下来」有 1446 场，原来是一场一张卡平铺，
+// 要划到最底得滚很久，而且 1446 个 MatchCard 同时挂在 DOM 上，手机端
+// 明显卡。折叠之后收起的那些天一个卡片都不渲染，滚动长度从上千张卡
+// 变成几十行标题。
+//
+// 默认只展开最近的一天——绝大多数时候要看的就是马上要踢的那批。
+function DayGroups({ matches, renderMatch, selectedIds }) {
+  const days = useMemo(() => {
+    const map = new Map();
+    for (const m of matches) {
+      if (!map.has(m.date)) map.set(m.date, []);
+      map.get(m.date).push(m);
+    }
+    return [...map.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  }, [matches]);
+
+  // 用日期串当依赖，而不是 matches 本身——matches 是每次渲染新建的过滤
+  // 数组，拿它当依赖会每帧都重置，展开状态根本留不住。
+  const daysKey = days.map(d => d[0]).join("|");
+  const [openDays, setOpenDays] = useState(() => new Set(days.length ? [days[0][0]] : []));
+  useEffect(() => {
+    // 换了赛事筛选 → 天数变了 → 回到「只展开最近一天」
+    setOpenDays(new Set(days.length ? [days[0][0]] : []));
+  }, [daysKey]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!days.length) return null;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+
+  function toggle(date) {
+    setOpenDays(s => {
+      const next = new Set(s);
+      next.has(date) ? next.delete(date) : next.add(date);
+      return next;
+    });
+  }
+
+  const allOpen = openDays.size === days.length;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 8 }}>
+        <button
+          onClick={() => setOpenDays(allOpen ? new Set() : new Set(days.map(d => d[0])))}
+          style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim,
+                   borderRadius: 6, padding: "4px 10px", fontSize: 11 }}>
+          {allOpen ? "全部收起" : `全部展开（${days.length} 天）`}
+        </button>
+      </div>
+
+      {days.map(([date, list]) => {
+        const open = openDays.has(date);
+        const d = new Date(date + "T12:00:00");
+        const wd = d.toLocaleDateString("zh-HK", { weekday: "short" });
+        const mark = date === today ? "今天" : date === tomorrow ? "明天" : null;
+        // 这一天涉及哪些赛事，收起时也能看出来，不用展开才知道有没有你要的联赛
+        const comps = [...new Set(list.map(m => m.competition_name).filter(Boolean))];
+        // 串关页会传 selectedIds 进来：这一天选了几场要显示在标题上，
+        // 否则折叠之后完全看不出自己选过什么
+        const nSel = selectedIds ? list.filter(m => selectedIds.has(m.id)).length : 0;
+        return (
+          <div key={date} style={{ marginBottom: 8 }}>
+            <button
+              onClick={() => toggle(date)}
+              style={{ width: "100%", display: "flex", alignItems: "center", gap: 10,
+                       background: C.surface, border: `1px solid ${C.border}`,
+                       borderRadius: 9, padding: "10px 12px", color: C.text,
+                       textAlign: "left", fontSize: 13 }}>
+              <span style={{ color: C.textDim, fontSize: 11, width: 12, flexShrink: 0 }}>
+                {open ? "▾" : "▸"}
+              </span>
+              <span style={{ fontWeight: 800 }}>{fdt(date)}</span>
+              <span style={{ color: C.textDim, fontSize: 11 }}>{wd}</span>
+              {mark && (
+                <span style={{ background: C.accentDim, color: C.accent, borderRadius: 5,
+                               padding: "1px 6px", fontSize: 10, fontWeight: 700 }}>{mark}</span>
+              )}
+              <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ color: C.textDim, fontSize: 10.5 }}>{comps.join(" · ")}</span>
+                {nSel > 0 && (
+                  <span style={{ background: C.accentDim, color: C.accent, borderRadius: 5,
+                                 padding: "1px 6px", fontSize: 10, fontWeight: 700 }}>已选 {nSel}</span>
+                )}
+                <span style={{ background: C.muted, color: C.text, borderRadius: 5,
+                               padding: "1px 7px", fontSize: 11, fontWeight: 700 }}>{list.length}</span>
+              </span>
+            </button>
+            {open && <div style={{ marginTop: 6 }}>{list.map(renderMatch)}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function MatchCard({ match, settings, onRefresh }) {
   const [open, setOpen] = useState(false);
   const [oHome, setOHome] = useState(match.latest_odds?.odds_home?.toString() || "");
@@ -1177,7 +1274,7 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
 
       {upcoming.length === 0 && <Empty text="暂无即将赛事可供选择" />}
 
-      {upcoming.map(m => {
+      <DayGroups matches={upcoming} selectedIds={new Set(selectedIds)} renderMatch={m => {
         const isSel = !!selected[m.id];
         const p = m.prediction;
         return (
@@ -1215,7 +1312,7 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
             )}
           </div>
         );
-      })}
+      }} />
 
       <button onClick={generate} disabled={loading || selectedIds.length < 2}
         style={{ width: "100%", padding: "11px", borderRadius: 8, border: "none", background: selectedIds.length >= 2 ? C.accent : C.muted, color: selectedIds.length >= 2 ? C.bg : C.textDim, fontWeight: 800, fontSize: 13, marginTop: 8, marginBottom: 14 }}>
