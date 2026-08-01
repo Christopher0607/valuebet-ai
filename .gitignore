@@ -2,6 +2,12 @@ node_modules/
 dist/
 *.db
 *.db-journal
+# WAL 模式的两个附属文件。models.py 改成 journal_mode=WAL 之后，SQLite 不再
+# 生成 .db-journal，改为生成 -wal 和 -shm，而上面两条规则一个都盖不住它们。
+# 后果是 -wal（里面就是数据库页，含 real_bets 和 user_settings）被提交进了
+# **公开仓库**。加规则的同时要 git rm --cached，光加规则对已跟踪的文件无效。
+*.db-wal
+*.db-shm
 __pycache__/
 *.pyc
 .DS_Store
