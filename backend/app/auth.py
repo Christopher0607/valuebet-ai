@@ -17,6 +17,7 @@ Supabase Auth 校验。
 只需要 publishable key，理由见 _verify_via_supabase 的注释。
 """
 import os
+import re
 import time
 from typing import Optional
 
@@ -31,7 +32,16 @@ SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "").strip()
 SUPABASE_JWT_AUDIENCE = os.environ.get("SUPABASE_JWT_AUDIENCE", "authenticated")
 
 # 项目 URL。配了它（加上 anon key）就走「交给 Supabase 验」那条路。
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+#
+# 削掉末尾的 /rest/v1 之类：Supabase 后台「Data API URL」那一栏给的是
+# https://<ref>.supabase.co/rest/v1/，而这里要的是项目根地址（后面会拼
+# /auth/v1/user）。原样用的话请求会打到 .../rest/v1/auth/v1/user，
+# 返回 "Invalid API key"——报错指向 key，实际 key 是好的。
+# 前端 auth.js 里有同样的处理，两边必须一致。
+SUPABASE_URL = re.sub(
+    r"/(rest|auth|storage|realtime)/v\d+$", "",
+    os.environ.get("SUPABASE_URL", "").strip().rstrip("/"),
+)
 # publishable / anon key。公开值，前端包里本来就有一份。
 # 后端需要它只是为了通过 Supabase 的 API 网关，不用它做任何鉴权。
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "").strip()

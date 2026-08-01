@@ -11,8 +11,22 @@
 // 后端用 JWT Secret（私密，只存在 Railway 的环境变量里）验签令牌。
 import { createClient } from "@supabase/supabase-js";
 
-const URL = import.meta.env.VITE_SUPABASE_URL;
-const ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Supabase 后台的 Connect 面板里，「Data API URL」那一栏给的是
+// https://<ref>.supabase.co/rest/v1/ ——带着 REST 端点的路径。
+// 但 createClient 要的是**项目根地址**，它会自己往后面拼 /auth/v1/...。
+// 直接把那一栏粘过来的话，登录请求变成 .../rest/v1/auth/v1/token，
+// 打到 PostgREST 上，返回一句 "Invalid API key"——报错完全指错方向，
+// 让人以为是 key 的问题，实际 key 是对的。
+//
+// 这个坑是后台的措辞挖的，不是用户填错，所以在代码里自愈而不是靠文档提醒：
+// 把末尾的 /rest/v1、/auth/v1 和多余的斜杠削掉。
+function normalizeSupabaseUrl(raw) {
+  if (!raw) return raw;
+  return raw.trim().replace(/\/+$/, "").replace(/\/(rest|auth|storage|realtime)\/v\d+$/, "");
+}
+
+const URL = normalizeSupabaseUrl(import.meta.env.VITE_SUPABASE_URL);
+const ANON = (import.meta.env.VITE_SUPABASE_ANON_KEY || "").trim() || undefined;
 
 export const isAuthEnabled = Boolean(URL && ANON);
 
