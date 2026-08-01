@@ -5,13 +5,41 @@ in a single file on disk (valuebet.db), no external service needed.
 """
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey,
-    UniqueConstraint,
+    UniqueConstraint, event,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
 
 DATABASE_URL = "sqlite:///./valuebet.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
+# timeout=30：SQLAlchemy 默认只等 5 秒就抛 "database is locked"。
+# 启动时调度器会在后台线程立刻跑一次全量更新（1700+ 场比赛和预测，
+# 几十秒的密集写入），这期间前端的 API 读请求会撞上写锁。5 秒根本不够，
+# 于是首页加载就报 500，界面显示「无法连接本地后端」——用户以为服务没起，
+# 其实是起来了正在写库。Windows 上磁盘慢加上 Defender 扫描写入，
+# 锁窗口比 Linux 宽得多，所以这个 bug 在开发机上几乎复现不到。
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False, "timeout": 30},
+)
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_pragmas(dbapi_conn, _record):
+    """每条新连接都设一次 PRAGMA —— 它们是连接级的，不是数据库级的。
+
+    journal_mode=WAL 是这里的关键：默认的 delete 模式下，**一个写事务会阻塞
+    全部读**；WAL 模式下读写可以并发，长时间的更新不再让整个界面瘫掉。
+    WAL 是持久属性（写进数据库文件头），但重复设置无害。
+
+    busy_timeout 是 connect_args 里 timeout 的兜底：某些路径下
+    （比如 SQLAlchemy 内部新建的连接）那个参数不一定传得到。
+    """
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA busy_timeout=30000")
+    cur.execute("PRAGMA synchronous=NORMAL")   # WAL 下这一档足够安全，写入快很多
+    cur.close()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

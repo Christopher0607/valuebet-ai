@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 // 打包后走同源相对路径，不写死主机名——后端本来就在托管这份前端，
@@ -53,6 +53,8 @@ export default function App() {
   const [loading, setLoading]   = useState(true);
   const [apiError, setApiError] = useState(null);
   const [updating, setUpdating] = useState(false);
+  const [starting, setStarting] = useState(false);   // 后端还在启动中
+  const retryRef = useRef(0);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -79,10 +81,22 @@ export default function App() {
       setBankroll(br);
       setSettings(se);
     } catch (e) {
+      // 刚启动那十几秒后端可能还没就绪（uvicorn 还没绑定端口，或者首次
+      // 全量更新正在写库）。直接甩「无法连接本地后端」会让人以为服务没起，
+      // 其实再等几秒就好了。所以先默默重试几轮，真连不上才报错。
+      if (retryRef.current < 6) {
+        retryRef.current += 1;
+        setStarting(true);
+        setTimeout(() => loadAll(), 2500);
+        return;                       // 不要走 finally 里的 setLoading(false)
+      }
       setApiError(e.message);
+      setStarting(false);
     } finally {
       setLoading(false);
     }
+    retryRef.current = 0;
+    setStarting(false);
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -163,6 +177,21 @@ export default function App() {
   const backtestLabel = backtest
     ? backtest.competition_name
     : (comp != null ? (competitions.find(c => c.id === comp)?.name_zh || "该赛事") : null);
+
+  if (starting && !apiError) {
+    return (
+      <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter',system-ui,sans-serif", padding: 24 }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ width: 30, height: 30, border: `3px solid ${C.border}`, borderTopColor: C.accent, borderRadius: "50%", animation: "spin 0.7s linear infinite", margin: "0 auto 14px" }} />
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>后端启动中…</div>
+          <div style={{ fontSize: 12, color: C.textDim, maxWidth: 340, lineHeight: 1.7 }}>
+            首次启动要抓取并计算 1700 多场比赛，通常十几秒到一分钟。
+            这个页面会自动重连，不用手动刷新。
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // ── Backend not running: clear, actionable error state ──
   if (apiError && !loading) {
