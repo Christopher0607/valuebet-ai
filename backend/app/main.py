@@ -297,6 +297,7 @@ def list_matches(status_filter: Optional[str] = None, competition_id: Optional[i
             "competition_name": comp_names.get(m.competition_id),
             "date": m.date.isoformat(), "team1": m.team1, "team2": m.team2,
             "score1": m.score1, "score2": m.score2,
+            "time_utc": m.time_utc,
             "round": m.round, "grp": m.grp, "ground": m.ground, "status": m.status,
             "prediction": _pred_dict(pred) if pred else None,
             "latest_odds": {

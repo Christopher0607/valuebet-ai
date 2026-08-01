@@ -208,6 +208,7 @@ def parse_openfootball_txt(text: str) -> list:
     year = None
     cur_date = None
     cur_round = None
+    cur_time = None          # 没写时间的比赛沿用同一天上一场的时间（源文件就这么排的）
     paren_depth = 0
 
     for raw in text.splitlines():
@@ -243,6 +244,7 @@ def parse_openfootball_txt(text: str) -> list:
             elif cur_date and mon < cur_date.month:
                 year += 1                     # 兜底：12 月跳到 1 月而上游漏写年份
             cur_date = date_cls(year, mon, day)
+            cur_time = None          # 换一天就重置，别把前一天的时间带过来
             continue
 
         if cur_date is None:
@@ -250,16 +252,20 @@ def parse_openfootball_txt(text: str) -> list:
 
         m = _TXT_RESULT.match(line)
         if m:
-            _h, _mi, t1, sh, sa, t2 = m.groups()
-            out.append({"date": cur_date.isoformat(), "round": cur_round,
+            h, mi, t1, sh, sa, t2 = m.groups()
+            if h:
+                cur_time = f"{int(h):02d}:{mi}"
+            out.append({"date": cur_date.isoformat(), "round": cur_round, "time": cur_time,
                         "team1": t1.strip(), "team2": t2.strip(),
                         "score": {"ft": [int(sh), int(sa)]}})
             continue
 
         m = _TXT_FIXTURE.match(line)
         if m:
-            _h, _mi, t1, t2 = m.groups()
-            out.append({"date": cur_date.isoformat(), "round": cur_round,
+            h, mi, t1, t2 = m.groups()
+            if h:
+                cur_time = f"{int(h):02d}:{mi}"
+            out.append({"date": cur_date.isoformat(), "round": cur_round, "time": cur_time,
                         "team1": t1.strip(), "team2": t2.strip(), "score": None})
 
     return out
@@ -394,9 +400,12 @@ def upsert_matches(db: Session, comp: models.Competition, played: list, upcoming
                 existing.score1, existing.score2 = s1, s2
                 existing.status = "played"
                 updated += 1
+            if m.get("time") and existing.time_utc != m["time"]:
+                existing.time_utc = m["time"]
         else:
             db.add(models.Match(
                 competition_id=comp.id, date=date_cls.fromisoformat(d),
+                time_utc=m.get("time"),
                 team1=t1, team2=t2, score1=s1, score2=s2,
                 round=m.get("round", ""), grp=m.get("group", "KO"),
                 ground=m.get("ground", ""), status="played",
@@ -405,15 +414,26 @@ def upsert_matches(db: Session, comp: models.Competition, played: list, upcoming
 
     for m in upcoming:
         t1, t2, d = normalize_team_name(m["team1"]), normalize_team_name(m["team2"]), m["date"]
-        existing = db.query(models.Match).filter_by(
-            competition_id=comp.id, date=date_cls.fromisoformat(d), team1=t1, team2=t2
-        ).first()
-        if not existing:
-            db.add(models.Match(
+        # 这里原来还在每场比赛查一次库——上面 played 那半边改成批量了，
+        # 这半边漏掉了。赛程占绝大多数（1446/1739），漏的正是重的那一半。
+        existing = existing_by_key.get((date_cls.fromisoformat(d), t1, t2))
+        if existing:
+            # 上游把「整轮压在一个暂定时间」换成真实开球时间时要跟着改，
+            # 否则界面上永远显示第一次抓到的那个暂定值
+            if m.get("time") and existing.time_utc != m["time"]:
+                existing.time_utc = m["time"]
+                updated += 1
+        else:
+            new_match = models.Match(
                 competition_id=comp.id, date=date_cls.fromisoformat(d),
+                time_utc=m.get("time"),
                 team1=t1, team2=t2, round=m.get("round", ""), grp="KO",
                 ground=m.get("ground", ""), status="upcoming",
-            ))
+            )
+            db.add(new_match)
+            # 同一轮里同队同日的重复对阵不会有，但把新建的也放进字典，
+            # 保证「先出现在 played 再出现在 upcoming」这类顺序不会重复插入
+            existing_by_key[(date_cls.fromisoformat(d), t1, t2)] = new_match
             updated += 1
 
     db.commit()
