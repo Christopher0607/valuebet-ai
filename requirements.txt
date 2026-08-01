@@ -1,0 +1,7 @@
+# Nixpacks 靠仓库根目录的文件判断项目类型。真正的依赖在 backend/requirements.txt，
+# 但根目录没有这个文件的话，Railway 识别不出这是 Python 项目、不装任何依赖，
+# 然后 railway.json 里 startCommand 的 uvicorn 就会「命令不存在」，
+# 表现为 build 阶段直接失败。
+#
+# runtime.txt 不顶用——那是 Heroku 的约定，nixpacks 不看它。
+-r backend/requirements.txt
