@@ -43,6 +43,8 @@ export default function App() {
   const [status, setStatus] = useState(null);
   const [matches, setMatches] = useState([]);
   const [backtestByComp, setBacktestByComp] = useState([]);
+  const [competitions, setCompetitions] = useState([]);
+  const [comp, setComp] = useState(null);        // null = 全部赛事
   const [bets, setBets]     = useState([]);
   const [realBets, setRealBets] = useState([]);
   const [bankroll, setBankroll] = useState(null);
@@ -56,7 +58,7 @@ export default function App() {
     setLoading(true);
     setApiError(null);
     try {
-      const [st, all, bt, vb, rb, br, se] = await Promise.all([
+      const [st, all, bt, vb, rb, br, se, cp] = await Promise.all([
         api("/status"),
         api("/matches"),
         api("/backtest-summary"),
@@ -64,10 +66,14 @@ export default function App() {
         api("/real-bets"),
         api("/bankroll-summary"),
         api("/settings"),
+        // 赛事名单单独取：backtest-summary 里的 by_competition 会跳过
+        // 「还没有已完赛比赛」的赛事，拿它当赛事全集会漏掉新赛事
+        api("/competitions"),
       ]);
       setStatus(st);
       setMatches(all);
       setBacktestByComp(bt.by_competition || []);
+      setCompetitions(cp || []);
       setBets(vb);
       setRealBets(rb);
       setBankroll(br);
@@ -131,13 +137,32 @@ export default function App() {
   // 不是即将赛事。实测撞到过：2025-05-31 的欧冠决赛（PSG vs 国米）因为没有
   // 比分，一直被当成「接下来 1 场」显示，而那已经是 14 个月前的事。
   // 把它们分出来单独提示，而不是混进 upcoming 里让人以为有比赛可下。
+  // ── 赛事筛选 ────────────────────────────────────────────
+  // comp === null 表示「全部赛事」。注意：即使选了全部，顶部统计栏也只显示
+  // **单个赛事**的数字，绝不跨赛事求和或求平均——不同赛事的准确率和 RPS
+  // 不可比（世界杯 67% vs 英超 52% 是赛事难度差异，不是模型好坏），
+  // 平均出来是个没有意义的数。后端 /api/backtest-summary 的注释里也写了
+  // 「不做任何跨赛事聚合」，前端在这里合并回去等于把那个 bug 重新引入。
+  // 所以「全部」模式下统计栏取第一个赛事并**标明是哪一个**，而不是假装是总体。
   const _today = new Date().toISOString().slice(0, 10);
-  const upcoming = matches.filter(m => m.status === "upcoming" && m.date >= _today);
-  const stale    = matches.filter(m => m.status === "upcoming" && m.date < _today);
-  const played   = matches.filter(m => m.status === "played");
-  // 顶部统计栏取第一个赛事的数字。刻意不做跨赛事求和/平均——后端已经
-  // 拆开了，前端再合并回去等于把刚修的 bug 重新引入一遍。
-  const backtest = backtestByComp[0] || null;
+  const inComp = m => comp == null || m.competition_id === comp;
+
+  const upcoming = matches.filter(m => m.status === "upcoming" && m.date >= _today && inComp(m));
+  const stale    = matches.filter(m => m.status === "upcoming" && m.date < _today && inComp(m));
+  const played   = matches.filter(m => m.status === "played" && inComp(m));
+  // 注单可能没有 competition_id（老数据，或后端没回填），这时不过滤掉，
+  // 宁可多显示也不要让用户以为注单丢了
+  const shownBets     = bets.filter(b => comp == null || b.competition_id == null || b.competition_id === comp);
+  const shownRealBets = realBets.filter(b => comp == null || b.competition_id == null || b.competition_id === comp);
+
+  const backtest = (comp != null
+    ? backtestByComp.find(b => b.competition_id === comp)
+    : backtestByComp[0]) || null;
+  // 统计栏到底在显示哪个赛事——原来这里完全没有标签，世界杯的数字
+  // 看起来像是全站总体数字
+  const backtestLabel = backtest
+    ? backtest.competition_name
+    : (comp != null ? (competitions.find(c => c.id === comp)?.name_zh || "该赛事") : null);
 
   // ── Backend not running: clear, actionable error state ──
   if (apiError && !loading) {
@@ -219,6 +244,26 @@ export default function App() {
             </button>
           ))}
         </div>
+
+        {/* 赛事筛选。价格策略页不依赖赛程（手输赔率），所以那一页不显示 */}
+        {competitions.length > 0 && tab !== "strategy" && (
+          <div style={{ display: "flex", gap: 4, marginTop: 7, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, marginRight: 2 }}>赛事</span>
+            {[{ id: null, name_zh: "全部" }, ...competitions].map(c => {
+              const on = comp === c.id;
+              const n = c.id == null ? matches.length : matches.filter(m => m.competition_id === c.id).length;
+              return (
+                <button key={String(c.id)} onClick={() => setComp(c.id)}
+                  style={{ padding: "4px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                           border: `1px solid ${on ? C.blue : C.border}`,
+                           background: on ? C.blueDim : "transparent",
+                           color: on ? C.blue : C.textDim }}>
+                  {c.name_zh}<span style={{ opacity: 0.55, marginLeft: 4 }}>{n}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {showSett && settings && (
@@ -229,11 +274,11 @@ export default function App() {
       {backtest && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", background: C.border, gap: 1 }}>
           {[
-            { v: `${backtest.correct}/${backtest.total}`, l: "预测正确", c: C.blue },
-            { v: pct(backtest.accuracy), l: "准确率", c: backtest.accuracy > 0.6 ? C.accent : C.gold },
-            { v: backtest.avg_rps?.toFixed(3), l: "平均RPS", c: C.accent },
-            { v: bets.length, l: "虚拟下注", c: C.text },
-            { v: realBets.length, l: "实盘下注", c: C.purple },
+            { v: `${backtest.correct}/${backtest.total}`, l: `${backtestLabel} · 预测正确`, c: C.blue },
+            { v: pct(backtest.accuracy), l: `${backtestLabel} · 准确率`, c: backtest.accuracy > 0.6 ? C.accent : C.gold },
+            { v: backtest.avg_rps?.toFixed(3), l: `${backtestLabel} · 平均RPS`, c: C.accent },
+            { v: shownBets.length, l: "虚拟下注", c: C.text },
+            { v: shownRealBets.length, l: "实盘下注", c: C.purple },
             { v: fnum(bankroll?.real?.total_pnl), l: "实盘盈亏", c: (bankroll?.real?.total_pnl || 0) >= 0 ? C.accent : C.red },
           ].map(({ v, l, c }) => (
             <div key={l} style={{ background: C.surface, padding: "9px 8px", textAlign: "center" }}>
@@ -269,7 +314,7 @@ export default function App() {
         {!loading && tab === "backtest" && (
           <div>
             {backtestByComp.length === 0 && <Empty text="还没有已完赛的比赛" />}
-            {backtestByComp.map(bc => {
+            {backtestByComp.filter(bc => comp == null || bc.competition_id === comp).map(bc => {
               const compPlayed = played.filter(m => m.competition_id === bc.competition_id);
               return (
                 <div key={bc.competition_id} style={{ marginBottom: 26 }}>
@@ -317,22 +362,22 @@ export default function App() {
           <div>
             <SL>虚拟下注 · 起始 {(+settings.bankroll_total).toLocaleString()} 单位</SL>
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 12 }}>
-              <Stat label="总注数" val={bets.length} color={C.blue} />
-              <Stat label="赢注" val={bets.filter(b => b.result === "win").length} color={C.accent} />
-              <Stat label="待结算" val={bets.filter(b => b.result === "pending").length} color={C.gold} />
+              <Stat label="总注数" val={shownBets.length} color={C.blue} />
+              <Stat label="赢注" val={shownBets.filter(b => b.result === "win").length} color={C.accent} />
+              <Stat label="待结算" val={shownBets.filter(b => b.result === "pending").length} color={C.gold} />
               <Stat label="总盈亏" val={fnum(bankroll?.virtual?.total_pnl)} color={(bankroll?.virtual?.total_pnl || 0) >= 0 ? C.accent : C.red} />
               <Stat label="ROI" val={bankroll?.virtual ? bankroll.virtual.roi_pct.toFixed(1) + "%" : "—"} color={(bankroll?.virtual?.roi_pct || 0) >= 0 ? C.accent : C.red} />
-              <Stat label="胜率" val={bets.length ? pct(bets.filter(b => b.result === "win").length / bets.length) : "—"} color={C.blue} />
+              <Stat label="胜率" val={shownBets.length ? pct(shownBets.filter(b => b.result === "win").length / shownBets.length) : "—"} color={C.blue} />
               <Stat label="" val="" color={C.textDim} />
               <Stat label="" val="" color={C.textDim} />
             </div>
-            {bets.length === 0 && <Empty text="还没有虚拟下注。去「预测」页输入赔率，点「🎲 虚拟」。" />}
-            {bets.length > 0 && (
+            {shownBets.length === 0 && <Empty text="还没有虚拟下注。去「预测」页输入赔率，点「🎲 虚拟」。" />}
+            {shownBets.length > 0 && (
               <div style={{ background: C.surface, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
                 <div style={{ display: "grid", gridTemplateColumns: "64px 1fr 60px 52px 52px 52px 60px 40px", padding: "7px 12px", background: C.muted, fontSize: 9, color: C.textDim, fontWeight: 700, textTransform: "uppercase", gap: 3 }}>
                   {["日期", "赛事", "方向", "赔率", "本金", "EV", "盈亏", "结果"].map(h => <span key={h}>{h}</span>)}
                 </div>
-                {bets.map(b => (
+                {shownBets.map(b => (
                   <div key={b.id} style={{ display: "grid", gridTemplateColumns: "64px 1fr 60px 52px 52px 52px 60px 40px", padding: "7px 12px", borderBottom: `1px solid ${C.border}`, background: b.result === "win" ? C.accentDim : b.result === "loss" ? C.redDim : "transparent", gap: 3, alignItems: "center", fontSize: 11 }}>
                     <span style={{ color: C.textDim }}>{fdt(b.date)}</span>
                     <span style={{ fontWeight: 600 }}>{b.team1} vs {b.team2}</span>
@@ -350,7 +395,7 @@ export default function App() {
         )}
 
         {!loading && tab === "realbets" && settings && (
-          <RealBetsTab realBets={realBets} bankroll={bankroll} settings={settings} />
+          <RealBetsTab realBets={shownRealBets} bankroll={bankroll} settings={settings} />
         )}
 
         {!loading && tab === "chart" && bankroll && (
@@ -380,7 +425,8 @@ function StatusBanner({ status, updating, onUpdateNow }) {
         ) : (
           <>
             🖥️ 本地运行中 · 上次更新 {fdatetime(status.last_update)}
-            {status.last_status === "error" && <span style={{ color: C.red }}> · 上次更新失败: {status.last_detail}</span>}
+            {status.last_severity === "error" && <span style={{ color: C.red }}> · 更新失败: {status.last_detail}</span>}
+            {status.last_severity === "warning" && <span style={{ color: C.gold }}> · ⚠ {status.last_status_label}{status.last_detail ? `：${status.last_detail}` : ""}</span>}
           </>
         )}
       </span>
@@ -534,7 +580,9 @@ function MatchCard({ match, settings, onRefresh }) {
       <div onClick={() => setOpen(o => !o)} style={{ padding: "11px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", userSelect: "none" }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 13 }}>{match.team1} <span style={{ color: C.textDim, fontWeight: 400, fontSize: 12 }}>vs</span> {match.team2}</div>
-          <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>{fdt(match.date)} · {match.round} · {match.ground}</div>
+          <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>
+            {match.competition_name && <span style={{ color: C.blue, fontWeight: 700 }}>{match.competition_name} · </span>}
+            {fdt(match.date)} · {match.round} · {match.ground}</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <span style={{ fontSize: 10, color: C.blue }}>ELO {mdl.elo_home}/{mdl.elo_away}</span>
