@@ -2,10 +2,10 @@
 FastAPI application. Run with:  uvicorn app.main:app --reload --port 8000
 See README.md in the project root for full setup instructions.
 """
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from datetime import datetime
@@ -20,6 +20,7 @@ from .models import (
 )
 from .updater import run_full_update
 from .scheduler import start_scheduler, next_run_info
+from .auth import AUTH_ENABLED, current_user, require_auth_configured
 from .model import expected_value, kelly_pct, BayesianTeamState, parlay_ev_and_risk, suggest_parlays
 from .ev_evidence import (
     bet_advisory, parlay_advisory, price_capture, reality_check,
@@ -37,15 +38,55 @@ app = FastAPI(title="ValueBet Local API")
 # 0.0.0.0，同网段的任何设备都能访问，没必要再把跨域也全开。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    # 云端前端在 Vercel，域名通过 FRONTEND_ORIGINS 环境变量传进来
+    # （逗号分隔，例如 "https://valuebet.vercel.app"）。不写死是因为
+    # Vercel 每个预览部署都有独立域名。
+    allow_origins=[o.strip() for o in os.environ.get("FRONTEND_ORIGINS", "").split(",") if o.strip()]
+                  + ["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_origin_regex=r"http://(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):5173",
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+# 公开路径：不需要登录也能访问。刻意只放这三类——
+#   /api/health  探活，部署平台要用
+#   /docs /openapi.json  接口文档，不含任何用户数据
+#   非 /api 开头的一切（前端静态文件、登录页本身）
+_PUBLIC_PREFIXES = ("/api/health",)
+
+
+@app.middleware("http")
+async def _enforce_auth(request: Request, call_next):
+    """统一拦截，而不是在 30 个路由上逐个挂依赖。
+
+    逐个挂的问题不是麻烦，是**漏挂不会报错**——以后新增一个接口忘了加，
+    它就默默地不需要登录，而你不会发现。中间件是默认拒绝、显式放行，
+    新接口自动受保护。
+    """
+    if not AUTH_ENABLED or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    if request.url.path.startswith(_PUBLIC_PREFIXES):
+        return await call_next(request)
+    if request.method == "OPTIONS":            # CORS 预检不带令牌，必须放行
+        return await call_next(request)
+    try:
+        await current_user(request)
+    except HTTPException as e:
+        return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+    return await call_next(request)
+
+
+@app.get("/api/health")
+def health():
+    """探活。不碰数据库，部署平台用它判断实例是否存活。"""
+    return {"ok": True, "auth_enabled": AUTH_ENABLED}
+
+
 @app.on_event("startup")
 def on_startup():
+    # 真部署但没配认证 → 直接拒绝启动，不能让接口裸奔
+    require_auth_configured()
     init_db()
     _seed_default_competition()
     _seed_default_settings()
