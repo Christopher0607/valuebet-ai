@@ -28,6 +28,9 @@ SUPABASE_JWT_AUDIENCE = os.environ.get("SUPABASE_JWT_AUDIENCE", "authenticated")
 
 # 新版 Supabase 项目用非对称签名，公钥走 JWKS。填了项目 URL 就用这条路。
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+# publishable / anon key。公开值，前端包里本来就有一份。
+# 后端需要它**只是为了通过 Supabase API 网关去取公钥**，不用它做任何鉴权。
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "").strip()
 JWKS_URL = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json" if SUPABASE_URL else ""
 
 # 两条路任意一条配上就算启用认证
@@ -38,10 +41,22 @@ _jwk_cache = None
 
 def _jwk_client():
     """PyJWKClient 自带公钥缓存，所以只建一次——每次请求都新建的话，
-    每个 API 调用都要多一次到 Supabase 的网络往返。"""
+    每个 API 调用都要多一次到 Supabase 的网络往返。
+
+    **必须带 apikey 头。** Supabase 的整个 /auth/v1 都在它的 API 网关后面，
+    连公开的 JWKS 端点也不例外，不带这个头会返回：
+        {"message":"No API key found in request"}
+    而 PyJWKClient 默认不发任何自定义头。少了它的后果是取公钥永远失败，
+    表现为所有请求 401、报错写「取签名公钥失败」——看起来像密钥配错了，
+    实际是缺一个请求头。
+
+    这里用的是 publishable（anon）key，它本来就是公开的、会打进前端包，
+    放在后端环境变量里没有任何额外风险。
+    """
     global _jwk_cache
     if _jwk_cache is None:
-        _jwk_cache = jwt.PyJWKClient(JWKS_URL, cache_keys=True)
+        headers = {"apikey": SUPABASE_ANON_KEY} if SUPABASE_ANON_KEY else None
+        _jwk_cache = jwt.PyJWKClient(JWKS_URL, cache_keys=True, headers=headers)
     return _jwk_cache
 
 
@@ -54,6 +69,13 @@ def require_auth_configured() -> None:
     """
     from .models import IS_SQLITE
 
+    if JWKS_URL and not SUPABASE_ANON_KEY:
+        raise RuntimeError(
+            "拒绝启动：配了 SUPABASE_URL（走 JWKS 验签）但没有 SUPABASE_ANON_KEY。"
+            "Supabase 的 JWKS 端点在 API 网关后面，不带 apikey 头会返回 "
+            "'No API key found in request'，导致取公钥永远失败、所有请求 401。"
+            "请补上 SUPABASE_ANON_KEY（就是前端用的那个 sb_publishable_... ，公开值）。"
+        )
     if not IS_SQLITE and not AUTH_ENABLED:
         raise RuntimeError(
             "拒绝启动：DATABASE_URL 指向远程数据库（说明这是公网部署），"

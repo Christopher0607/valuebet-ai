@@ -44,7 +44,8 @@
    FRONTEND_ORIGINS  = https://你的项目.vercel.app
 
    # 下面二选一：
-   SUPABASE_URL        = https://xxxxx.supabase.co   ← 新项目用这个
+   SUPABASE_URL        = https://xxxxx.supabase.co     ← 新项目用这两个
+   SUPABASE_ANON_KEY   = sb_publishable_xxxxx
    # SUPABASE_JWT_SECRET = 你的jwt密钥                ← 旧项目用这个
    ```
 
