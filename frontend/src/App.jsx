@@ -230,6 +230,28 @@ export default function App() {
   const inComp = m => comp == null || m.competition_id === comp;
 
   const upcoming = matches.filter(m => m.status === "upcoming" && m.date >= _today && inComp(m));
+
+  // 「日期暂定」：同一赛事同一轮的比赛全挤在同一个日期同一个时间，说明上游
+  // 还没排具体日程。西甲 2026-27 第 1 轮就是 10 场全写 08-16 17:00；而英超
+  // 第 1 轮是排好的，分散在 8/21-8/24、时间各不相同。
+  // 不标出来的话，用户拿系统的日期去跟别处（按自己时区显示真实开球时间的
+  // 网站）对，会以为我们把不相干的比赛混进了同一天——实际就是这么误会的。
+  const provisionalRounds = useMemo(() => {
+    const byRound = new Map();
+    for (const m of matches) {
+      if (m.status !== "upcoming") continue;
+      const k = `${m.competition_id}|${m.round}`;
+      if (!byRound.has(k)) byRound.set(k, []);
+      byRound.get(k).push(m);
+    }
+    const out = new Set();
+    for (const [k, list] of byRound) {
+      // 至少 4 场才判定——两三场同一时间开球是正常的
+      if (list.length >= 4 && new Set(list.map(m => `${m.date} ${m.time_utc}`)).size === 1) out.add(k);
+    }
+    return out;
+  }, [matches]);
+  const isProvisional = m => provisionalRounds.has(`${m.competition_id}|${m.round}`);
   const stale    = matches.filter(m => m.status === "upcoming" && m.date < _today && inComp(m));
   const played   = matches.filter(m => m.status === "played" && inComp(m));
   // 注单可能没有 competition_id（老数据，或后端没回填），这时不过滤掉，
@@ -464,7 +486,8 @@ export default function App() {
                              updating={updating} onUpdateNow={triggerUpdate} />
             )}
             <DayGroups matches={upcoming}
-              renderMatch={m => <MatchCard key={m.id} match={m} settings={settings} onRefresh={loadAll} />} />
+              renderMatch={m => <MatchCard key={m.id} match={m} settings={settings}
+                                            provisional={isProvisional(m)} onRefresh={loadAll} />} />
           </div>
         )}
 
@@ -847,7 +870,7 @@ function DayGroups({ matches, renderMatch, selectedIds }) {
   );
 }
 
-function MatchCard({ match, settings, onRefresh }) {
+function MatchCard({ match, settings, onRefresh, provisional }) {
   const [open, setOpen] = useState(false);
   const [oHome, setOHome] = useState(match.latest_odds?.odds_home?.toString() || "");
   const [oDraw, setODraw] = useState(match.latest_odds?.odds_draw?.toString() || "");
@@ -931,7 +954,12 @@ function MatchCard({ match, settings, onRefresh }) {
           <div style={{ fontWeight: 700, fontSize: 13 }}>{match.team1} <span style={{ color: C.textDim, fontWeight: 400, fontSize: 12 }}>vs</span> {match.team2}</div>
           <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>
             {match.competition_name && <span style={{ color: C.blue, fontWeight: 700 }}>{match.competition_name} · </span>}
-            {fdt(match.date)} · {match.round} · {match.ground}</div>
+            {fdt(match.date)}{match.time_utc ? ` ${match.time_utc}` : ""} · {match.round} · {match.ground}
+            {provisional && (
+              <span title="上游数据源还没排这一轮的具体日程，整轮先挂在一个名义日期上"
+                    style={{ marginLeft: 6, background: C.goldDim, color: C.gold, borderRadius: 4,
+                             padding: "1px 5px", fontSize: 9, fontWeight: 700 }}>日期暂定</span>
+            )}</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <span style={{ fontSize: 10, color: C.blue }}>ELO {mdl.elo_home}/{mdl.elo_away}</span>
@@ -995,26 +1023,32 @@ function MatchCard({ match, settings, onRefresh }) {
                     {item.evVal > threshold && <div style={{ fontSize: 10, fontWeight: 800, color: C.accent, marginTop: 3 }}>⚡ VALUE</div>}
                     <div style={{ display: "flex", gap: 4, marginTop: 7 }}>
                       <button onClick={() => doVBet(item.key)} disabled={saving === "v" + item.key || saved === "v" + item.key}
-                        style={{ flex: 1, padding: "5px", borderRadius: 6, border: "none", background: item.evVal > 0 ? C.blue : C.muted, color: item.evVal > 0 ? "#fff" : C.textDim, fontWeight: 700, fontSize: 10 }}>
+                        style={{ flex: 1, padding: "10px 5px", borderRadius: 6, border: "none", background: item.evVal > 0 ? C.blue : C.muted, color: item.evVal > 0 ? "#fff" : C.textDim, fontWeight: 700, fontSize: 12 }}>
                         {saved === "v" + item.key ? "✅" : saving === "v" + item.key ? "..." : "🎲 虚拟"}
                       </button>
                       <button onClick={() => setShowRF(showRF === item.key ? null : item.key)}
-                        style={{ flex: 1, padding: "5px", borderRadius: 6, border: `1px solid ${C.purple}`, background: showRF === item.key ? C.purple : "transparent", color: showRF === item.key ? "#0a0510" : C.purple, fontWeight: 700, fontSize: 10 }}>
+                        style={{ flex: 1, padding: "10px 5px", borderRadius: 6, border: `1px solid ${C.purple}`, background: showRF === item.key ? C.purple : "transparent", color: showRF === item.key ? "#0a0510" : C.purple, fontWeight: 700, fontSize: 12 }}>
                         💵 实盘
                       </button>
                     </div>
                     {showRF === item.key && (
                       <div style={{ marginTop: 7, paddingTop: 7, borderTop: `1px solid ${C.border}` }}>
                         <div style={{ fontSize: 9, color: C.textDim, marginBottom: 3 }}>真实下注金额（HKD）：</div>
-                        <div style={{ display: "flex", gap: 4 }}>
-                          <input type="number" placeholder={`建议 ${Math.round(item.kAmt || 0)}`} value={rStake[item.key] || ""}
-                            onChange={e => setRStake(r => ({ ...r, [item.key]: e.target.value }))}
-                            style={{ flex: 1, background: C.card, border: `1px solid ${C.purple}66`, borderRadius: 5, padding: "5px 7px", color: C.text, fontSize: 11 }} />
-                          <button onClick={() => doRBet(item.key)} disabled={saving === "r" + item.key || saved === "r" + item.key}
-                            style={{ padding: "5px 9px", borderRadius: 5, border: "none", background: C.purple, color: "#0a0510", fontWeight: 800, fontSize: 10 }}>
-                            {saved === "r" + item.key ? "✅" : saving === "r" + item.key ? "..." : "确认"}
-                          </button>
-                        </div>
+                        {/* 输入框和确认按钮改成上下排，不再并排。
+                            并排时按钮只有 padding 5px 9px、字号 10 —— 三列布局下
+                            每列约 105px，输入框占掉 flex:1，按钮实际可点区域只剩
+                            三四十像素宽、二十来像素高，手机上按不中（用户反馈的
+                            「手机端下注按不到确认」就是这个）。占满整行之后
+                            高度约 40px，是正常的触摸目标。
+                            输入框字号必须 ≥16px：iOS Safari 在小于 16px 时会自动
+                            放大整个页面，一放大按钮又跑偏了。 */}
+                        <input type="number" inputMode="decimal" placeholder={`建议 ${Math.round(item.kAmt || 0)}`} value={rStake[item.key] || ""}
+                          onChange={e => setRStake(r => ({ ...r, [item.key]: e.target.value }))}
+                          style={{ width: "100%", background: C.card, border: `1px solid ${C.purple}66`, borderRadius: 6, padding: "9px 10px", color: C.text, fontSize: 16, fontWeight: 700 }} />
+                        <button onClick={() => doRBet(item.key)} disabled={saving === "r" + item.key || saved === "r" + item.key}
+                          style={{ width: "100%", marginTop: 6, padding: "11px", borderRadius: 6, border: "none", background: C.purple, color: "#0a0510", fontWeight: 800, fontSize: 13 }}>
+                          {saved === "r" + item.key ? "✅ 已登记" : saving === "r" + item.key ? "..." : "确认登记实盘"}
+                        </button>
                       </div>
                     )}
                   </div>
