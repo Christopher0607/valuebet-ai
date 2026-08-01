@@ -26,7 +26,23 @@ SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "").strip()
 # Supabase 签发的令牌 aud 固定是 "authenticated"
 SUPABASE_JWT_AUDIENCE = os.environ.get("SUPABASE_JWT_AUDIENCE", "authenticated")
 
-AUTH_ENABLED = bool(SUPABASE_JWT_SECRET)
+# 新版 Supabase 项目用非对称签名，公钥走 JWKS。填了项目 URL 就用这条路。
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+JWKS_URL = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json" if SUPABASE_URL else ""
+
+# 两条路任意一条配上就算启用认证
+AUTH_ENABLED = bool(SUPABASE_JWT_SECRET or JWKS_URL)
+
+_jwk_cache = None
+
+
+def _jwk_client():
+    """PyJWKClient 自带公钥缓存，所以只建一次——每次请求都新建的话，
+    每个 API 调用都要多一次到 Supabase 的网络往返。"""
+    global _jwk_cache
+    if _jwk_cache is None:
+        _jwk_cache = jwt.PyJWKClient(JWKS_URL, cache_keys=True)
+    return _jwk_cache
 
 
 def require_auth_configured() -> None:
@@ -48,13 +64,29 @@ def require_auth_configured() -> None:
 
 
 def _decode(token: str) -> dict:
+    """验签。同时支持 Supabase 的两代签名方式。
+
+    旧项目：HS256 对称签名，密钥是设置页的 JWT Secret。
+    新项目：Supabase 2025 年起改用非对称签名密钥（ES256/RS256），
+            公钥挂在 <project>/auth/v1/.well-known/jwks.json，
+            设置页可能根本没有 "JWT Secret" 那一项。
+
+    只支持 HS256 的话，新建的 Supabase 项目部署完会所有请求 401，
+    而报错信息是「令牌无效」，看不出真正原因是算法不匹配。
+    所以两条路都留：配了 SUPABASE_JWT_SECRET 走对称，
+    配了 SUPABASE_URL 走 JWKS。
+    """
+    if JWKS_URL:
+        try:
+            signing_key = _jwk_client().get_signing_key_from_jwt(token)
+        except Exception as e:
+            raise HTTPException(401, f"取签名公钥失败: {e}")
+        key, algs = signing_key.key, ["ES256", "RS256"]
+    else:
+        key, algs = SUPABASE_JWT_SECRET, ["HS256"]
+
     try:
-        return jwt.decode(
-            token,
-            SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            audience=SUPABASE_JWT_AUDIENCE,
-        )
+        return jwt.decode(token, key, algorithms=algs, audience=SUPABASE_JWT_AUDIENCE)
     except jwt.ExpiredSignatureError:
         # 前端拿到 401 会自动去 Supabase 刷新令牌再重试，所以这里要跟
         # 「令牌无效」区分开——无效是要重新登录的，过期只需要刷新。

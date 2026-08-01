@@ -19,7 +19,14 @@
 3. **Project Settings → API**，抄下三个值：
    - `Project URL` → 前端要用
    - `anon public` key → 前端要用（公开的，打进前端包里没关系）
-   - **JWT Settings → JWT Secret** → **后端要用，这个是私密的，绝不能放前端**
+   - 后端验签用的值，**看你的项目是哪一代**：
+     - 设置页有 **JWT Settings → JWT Secret** → 旧项目，抄这个（私密，绝不能放前端）
+     - 只有 **JWT Signing Keys**、找不到 JWT Secret → 新项目（2025 年后建的都是），
+       后端改填 `SUPABASE_URL=https://xxxxx.supabase.co` 就行，它会自己去取公钥，
+       不需要任何私密值
+
+     > 新项目用 ES256 非对称签名。如果后端只支持旧的 HS256，部署完会所有请求 401，
+     > 而报错写的是「令牌无效」，看不出真正原因是算法不匹配。两条路都已支持。
 
 4. **Authentication → Providers → Email** 打开。
    如果不想收确认邮件，把 **Confirm email** 关掉，注册完直接能登录。
@@ -33,9 +40,12 @@
 3. **Variables** 里加三个（参考 `backend/.env.example`）：
 
    ```
-   DATABASE_URL       = 第一步复制的 6543 连接串
-   SUPABASE_JWT_SECRET = 第一步的 JWT Secret
-   FRONTEND_ORIGINS   = https://你的项目.vercel.app
+   DATABASE_URL      = 第一步复制的 6543 连接串
+   FRONTEND_ORIGINS  = https://你的项目.vercel.app
+
+   # 下面二选一：
+   SUPABASE_URL        = https://xxxxx.supabase.co   ← 新项目用这个
+   # SUPABASE_JWT_SECRET = 你的jwt密钥                ← 旧项目用这个
    ```
 
    > `FRONTEND_ORIGINS` 可以等 Vercel 部署完拿到域名再回来填。
