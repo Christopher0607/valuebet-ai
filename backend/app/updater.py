@@ -72,6 +72,13 @@ def normalize_team_name(name: str) -> str:
 
 
 _CLUB_NAME_ALIASES = {
+    # Premier League —— .txt 源仓库里写 "Bournemouth"，.json 镜像和拟合出来的
+    # 参数表里都是 "AFC Bournemouth"。上面那条"保留 AFC 前缀"的规则只保证
+    # "AFC Bournemouth" 不被削成 "Bournemouth"，反过来这一半它管不到。
+    # 目前生产上不会撞到（只有 .json 缺失的新赛季才走 .txt，而新赛季文件
+    # 用的正是 "AFC Bournemouth"），但只要哪天回退到旧赛季的 .txt，
+    # 这家俱乐部就会被拆成两支球队——正是这个函数存在的理由。
+    "Bournemouth": "AFC Bournemouth",
     # La Liga — verified against 2025-26 roster (Real Valladolid used
     # match-count tiebreak: 114 vs 76, since Valladolid isn't in the
     # 2025-26 top flight and there's no current-season signal to check)
@@ -144,36 +151,118 @@ def guess_current_season(today: date_cls = None) -> str:
     return f"{start_year}-{end_year_short}"
 
 
-def resolve_season_url(url_template: str, max_lookback: int = 4) -> tuple:
+# ── 新赛季赛程：.json 镜像落后于 .txt 源仓库 ──────────────────
+#
+# openfootball 有两套东西：各国的源仓库（england / espana / italy /
+# deutschland，赛程写成 .txt），以及由它们生成的 football.json 镜像。
+# **镜像的生成是滞后的。** 2026-08-01 实测：
+#
+#   football.json/2026-27/en.1.json          404
+#   england/2026-27/1-premierleague.txt      200  ← 八月开赛的完整赛程在这里
+#
+# 只认 .json 的话，resolve_season_url 会一路退回 2025-26——那一季已经
+# 全部踢完，于是「接下来的比赛」是空的。用户在别处查得到八月的赛程，
+# 在自己的系统里查不到，看起来像系统坏了，其实是取错了文件。
+#
+# 所以按赛季从新到旧逐个试，每个赛季先试 .json 再试 .txt，取第一个存在的。
+# 欧冠没有对应的 .txt 源（八月底才抽签，任何地方都还没有赛程），
+# 它继续走 .json 那条路，等镜像更新。
+_TXT_SOURCES = {
+    "en.1": "https://raw.githubusercontent.com/openfootball/england/master/{season}/1-premierleague.txt",
+    "es.1": "https://raw.githubusercontent.com/openfootball/espana/master/{season}/1-liga.txt",
+    "it.1": "https://raw.githubusercontent.com/openfootball/italy/master/{season}/1-seriea.txt",
+    "de.1": "https://raw.githubusercontent.com/openfootball/deutschland/master/{season}/1-bundesliga.txt",
+}
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
+
+# 日期行。已完赛的赛季顶格写、新赛季缩进两格，所以前导空白必须放开。
+# 年份只在变化时出现（实测 "Sat Dec 26" 之后是 "Sat Jan 2 2027"）。
+_TXT_DATE = re.compile(
+    r"^\s*(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+"
+    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:\s+(\d{4}))?\s*$")
+# 未开赛："20:00  Arsenal FC              v Coventry City FC"
+_TXT_FIXTURE = re.compile(r"^\s+(?:(\d{1,2}):(\d{2})\s+)?(\S.*?)\s+v\s+(\S.*?)\s*$")
+# 已完赛："19:00   Liverpool  4-2 (1-0)  Bournemouth"，半场比分可有可无
+_TXT_RESULT = re.compile(
+    r"^\s+(?:(\d{1,2}):(\d{2})\s+)?(\S.*?)\s+(\d{1,2})-(\d{1,2})(?:\s+\([\d\-]+\))?\s+(\S.*?)\s*$")
+_TXT_ROUND = re.compile(r"^\s*[▪»]\s*(.+?)\s*$")
+
+
+def parse_openfootball_txt(text: str) -> list:
+    """把 openfootball 的 .txt 赛程解析成跟 .json 同形的记录。
+
+    产出的字段跟 football.json 对齐（date / team1 / team2 / score / round），
+    这样下游的 _extract_final_score、upsert_matches 一行都不用改。
+
+    要处理的坑（都是对着两季真实文件确认的，不是设想）：
+      · 同一个联赛，已完赛的赛季和新赛季**缩进不一样**（顶格 vs 缩进两格）
+      · 队名在新赛季带 FC 后缀、旧赛季不带，交给 normalize_team_name 抹平
+      · 进球者写在括号里、可以跨多行，必须整块跳过。用括号配平来判断，
+        不能只看行首是不是 "("——续行是 "Antoine SEMENYO 64', 76')"，
+        行首没有括号，但它仍然属于上一行的括号块
+      · 没写时间的比赛沿用同一天上一场的时间
     """
-    赛季制赛事的 data_source 存的是含 "{season}" 占位符的模板。
+    out = []
+    year = None
+    cur_date = None
+    cur_round = None
+    paren_depth = 0
 
-    先试猜出来的当前赛季，不存在就逐个往回退。往回退几季很重要：
-    欧冠数据源最新只到 2024-25（2025-26 那季数据源没有），从 2026-27 算起
-    要退 3 季才够得着。之前只退 1 季，结果两个候选都 404，整个抓取直接失败——
-    这是实跑时才发现的，不是理论问题。
-
-    返回 (解析出的url, 用的赛季)。全都找不到时返回第一个候选，让调用方
-    拿到明确的 404 而不是一个静默的 None 往下游传。
-    """
-    current_season = guess_current_season()
-    start_year = int(current_season.split("-")[0])
-
-    candidates = []
-    for back in range(max_lookback + 1):
-        y = start_year - back
-        candidates.append(f"{y}-{str(y + 1)[-2:]}")
-
-    for season in candidates:
-        url = url_template.replace("{season}", season)
-        try:
-            r = requests.head(url, timeout=8)
-            if r.status_code == 200:
-                return url, season
-        except requests.RequestException:
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
             continue
 
-    return url_template.replace("{season}", candidates[0]), candidates[0]
+        # 括号块（进球者名单）整块跳过。先处理再做别的判断，否则
+        # "(Matt ORILEY 55'(p); RODRIGO MUNIZ 90+7')" 这种行会被误当成比赛。
+        if paren_depth > 0:
+            paren_depth += line.count("(") - line.count(")")
+            continue
+        if line.strip().startswith("("):
+            paren_depth = line.count("(") - line.count(")")
+            continue
+
+        s = line.strip()
+        if s.startswith("#") or s.startswith("="):
+            continue
+
+        m = _TXT_ROUND.match(line)
+        if m:
+            cur_round = m.group(1)
+            continue
+
+        m = _TXT_DATE.match(line)
+        if m:
+            mon, day, yr = _MONTHS[m.group(1)], int(m.group(2)), m.group(3)
+            if yr:
+                year = int(yr)
+            elif year is None:
+                continue                      # 还没见过任何年份，无从推断
+            elif cur_date and mon < cur_date.month:
+                year += 1                     # 兜底：12 月跳到 1 月而上游漏写年份
+            cur_date = date_cls(year, mon, day)
+            continue
+
+        if cur_date is None:
+            continue
+
+        m = _TXT_RESULT.match(line)
+        if m:
+            _h, _mi, t1, sh, sa, t2 = m.groups()
+            out.append({"date": cur_date.isoformat(), "round": cur_round,
+                        "team1": t1.strip(), "team2": t2.strip(),
+                        "score": {"ft": [int(sh), int(sa)]}})
+            continue
+
+        m = _TXT_FIXTURE.match(line)
+        if m:
+            _h, _mi, t1, t2 = m.groups()
+            out.append({"date": cur_date.isoformat(), "round": cur_round,
+                        "team1": t1.strip(), "team2": t2.strip(), "score": None})
+
+    return out
 
 
 def get_active_competitions(db: Session):
@@ -183,28 +272,63 @@ def get_active_competitions(db: Session):
     ).all()
 
 
-def _resolve_data_source(comp: models.Competition) -> str:
+def _resolve_data_source(comp: models.Competition):
+    """挑出这个赛事该用哪个文件，返回 (url, 格式)，格式是 "json" 或 "txt"。
+
+    世界杯的 data_source 是一个固定 URL（一届赛事，没有赛季概念）。
+    俱乐部联赛存的是含 "{season}" 占位符的模板。
+
+    按赛季从新到旧逐个试，**每个赛季先试 .json 再试 .txt**，第一个存在的
+    就用它。这个顺序是关键：只试 .json 的话，2026 年 8 月会一路退回
+    2025-26（已完赛），页面上一场未来赛事都没有——而 .txt 源仓库里
+    2026-27 的赛程早就发布了。实测数据见 _TXT_SOURCES 上方的注释。
     """
-    World Cup's data_source is a fixed URL (one ongoing tournament, no
-    season concept). Club leagues store a URL template containing the
-    literal "{season}" placeholder, resolved via resolve_season_url()
-    at fetch time -- verified against the real network: guess_current_season()
-    correctly guesses "2026-27" given a July date, resolve_season_url()
-    correctly detects that file doesn't exist yet (season hasn't started,
-    confirmed via real HEAD request) and falls back to "2025-26" (confirmed
-    to exist, HTTP 200).
+    if "{season}" not in comp.data_source:
+        return comp.data_source, "json"
+
+    # 从 .json 模板里取出 "en.1" 这样的键，用来查对应的 .txt 源
+    key = comp.data_source.rstrip("/").rsplit("/", 1)[-1].removesuffix(".json")
+    txt_template = _TXT_SOURCES.get(key)
+
+    start_year = int(guess_current_season().split("-")[0])
+    for back in range(5):
+        y = start_year - back
+        season = f"{y}-{str(y + 1)[-2:]}"
+        for template, fmt in ((comp.data_source, "json"), (txt_template, "txt")):
+            if not template:
+                continue
+            url = template.replace("{season}", season)
+            try:
+                if requests.head(url, timeout=8).status_code == 200:
+                    return url, fmt
+            except requests.RequestException:
+                continue
+
+    # 全都找不到：返回最新赛季的 .json，让调用方拿到一个明确的 404，
+    # 而不是一个静默的 None 往下游传
+    return comp.data_source.replace("{season}", f"{start_year}-{str(start_year + 1)[-2:]}"), "json"
+
+
+def _fetch_matches(comp: models.Competition) -> list:
+    """取回这个赛事的全部比赛记录，统一成 football.json 的形状。
+
+    fetch_results 和 fetch_upcoming 原来各自跑一遍探测阶梯再各自 GET 一次
+    ——同一个文件下载两遍，探测也做两遍。合并到这里，两边都只是在这份
+    结果上做过滤。
     """
-    if "{season}" in comp.data_source:
-        url, _season = resolve_season_url(comp.data_source)
-        return url
-    return comp.data_source
+    url, fmt = _resolve_data_source(comp)
+    r = requests.get(url, timeout=15)
+    r.raise_for_status()
+    if fmt == "txt":
+        # requests 对 text/plain 会按 ISO-8859-1 猜编码，而这些文件是 UTF-8
+        # （München、Atlético 都会被毁掉）。显式指定，别让它猜。
+        r.encoding = "utf-8"
+        return parse_openfootball_txt(r.text)
+    return r.json()["matches"]
 
 
 def fetch_results(comp: models.Competition) -> list:
-    r = requests.get(_resolve_data_source(comp), timeout=15)
-    r.raise_for_status()
-    data = r.json()
-    return [m for m in data["matches"] if _extract_final_score(m.get("score")) is not None]
+    return [m for m in _fetch_matches(comp) if _extract_final_score(m.get("score")) is not None]
 
 
 # 淘汰赛对阵还没确定时，openfootball 用 "Winner Match 73" / "Loser SF1" /
@@ -225,11 +349,8 @@ def _is_bracket_placeholder(name: str) -> bool:
 
 
 def fetch_upcoming(comp: models.Competition) -> list:
-    r = requests.get(_resolve_data_source(comp), timeout=15)
-    r.raise_for_status()
-    data = r.json()
     out = []
-    for m in data["matches"]:
+    for m in _fetch_matches(comp):
         has_score = _extract_final_score(m.get("score")) is not None
         placeholder = _is_bracket_placeholder(m.get("team1", "")) or _is_bracket_placeholder(m.get("team2", ""))
         if not has_score and not placeholder:
