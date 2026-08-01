@@ -1,17 +1,39 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { isAuthEnabled, supabase, getToken, signIn, signUp, signOut } from "./auth";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 // 打包后走同源相对路径，不写死主机名——后端本来就在托管这份前端，
 // 所以页面从哪个地址打开，API 就跟着走到哪台机器。
 // 这是手机能用的前提：写死 127.0.0.1 的话，手机上那个地址指的是手机自己。
 // vite 开发服务器（5173）是另一个源，那时才需要显式指向后端。
-const API = import.meta.env.DEV ? "http://127.0.0.1:8000/api" : "/api";
+// 三种部署形态，API 地址各不相同：
+//   1. 本地一键启动 —— 后端自己托管前端，同源相对路径 /api
+//   2. vite 开发 —— 前端在 5173、后端在 8000，是两个源
+//   3. 云端 —— 前端在 Vercel、后端在 Railway，完全不同的域名，
+//      由 VITE_API_BASE 指定（例如 https://valuebet.up.railway.app/api）
+const API = import.meta.env.VITE_API_BASE
+  ? import.meta.env.VITE_API_BASE.replace(/\/$/, "")
+  : (import.meta.env.DEV ? "http://127.0.0.1:8000/api" : "/api");
 
 async function api(path, opts) {
+  // 启用认证时每个请求都要带令牌。getToken 会在令牌快过期时自动续期，
+  // 所以这里不需要自己管刷新。
+  const token = await getToken();
   const res = await fetch(API + path, {
-    headers: { "Content-Type": "application/json" },
     ...opts,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(opts?.headers || {}),
+    },
   });
+  if (res.status === 401) {
+    // 令牌失效：抛一个可识别的错误，App 会切回登录页而不是显示
+    // 「后端连不上」——那句话在这里是错的，后端好得很，是你没登录。
+    const err = new Error("UNAUTHORIZED");
+    err.unauthorized = true;
+    throw err;
+  }
   if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
   return res.json();
 }
@@ -54,6 +76,8 @@ export default function App() {
   const [apiError, setApiError] = useState(null);
   const [updating, setUpdating] = useState(false);
   const [starting, setStarting] = useState(false);   // 后端还在启动中
+  const [session, setSession] = useState(null);
+  const [authReady, setAuthReady] = useState(!isAuthEnabled);
   const retryRef = useRef(0);
 
   const loadAll = useCallback(async () => {
@@ -84,6 +108,11 @@ export default function App() {
       // 刚启动那十几秒后端可能还没就绪（uvicorn 还没绑定端口，或者首次
       // 全量更新正在写库）。直接甩「无法连接本地后端」会让人以为服务没起，
       // 其实再等几秒就好了。所以先默默重试几轮，真连不上才报错。
+      if (e.unauthorized) {          // 没登录/令牌过期 —— 不是后端挂了
+        setSession(null); setApiError(null); setStarting(false);
+        setLoading(false);
+        return;
+      }
       if (retryRef.current < 6) {
         retryRef.current += 1;
         setStarting(true);
@@ -178,6 +207,19 @@ export default function App() {
     ? backtest.competition_name
     : (comp != null ? (competitions.find(c => c.id === comp)?.name_zh || "该赛事") : null);
 
+  // 启用认证但还没登录 → 登录页。本地模式 authReady 一开始就是 true，
+  // session 永远是 null，这个分支不会进，行为跟以前完全一样。
+  if (isAuthEnabled && authReady && !session) {
+    return <LoginScreen onSignedIn={s => { setSession(s); setApiError(null); }} />;
+  }
+  if (isAuthEnabled && !authReady) {
+    return (
+      <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ width: 28, height: 28, border: `3px solid ${C.border}`, borderTopColor: C.accent, borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+      </div>
+    );
+  }
+
   if (starting && !apiError) {
     return (
       <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter',system-ui,sans-serif", padding: 24 }}>
@@ -259,6 +301,15 @@ export default function App() {
             >
               ⚙ 设置
             </button>
+            {isAuthEnabled && session && (
+              <button
+                onClick={async () => { await signOut(); setSession(null); }}
+                title={session.user?.email}
+                style={{ padding: "6px 12px", borderRadius: 7, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11, fontWeight: 700 }}
+              >
+                退出
+              </button>
+            )}
           </div>
         </div>
 
@@ -438,6 +489,79 @@ export default function App() {
 }
 
 // ── Status Banner — honest about the 12h mechanism ─────────
+function LoginScreen({ onSignedIn }) {
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [mode, setMode] = useState("in");     // 'in' 登录 | 'up' 注册
+  const [err, setErr] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setErr(null); setMsg(null); setBusy(true);
+    try {
+      if (mode === "in") {
+        const { session } = await signIn(email.trim(), pw);
+        onSignedIn(session);
+      } else {
+        const { needsEmailConfirm, data } = await signUp(email.trim(), pw);
+        if (needsEmailConfirm) {
+          // 不说清楚的话，用户会卡在「注册成功但进不去」，看起来像坏了
+          setMsg("注册成功。请去邮箱点确认链接，然后回来登录。");
+          setMode("in");
+        } else {
+          onSignedIn(data.session);
+        }
+      }
+    } catch (e2) {
+      setErr(e2.message);
+    } finally { setBusy(false); }
+  }
+
+  const inp = { width: "100%", padding: "10px 12px", borderRadius: 8, marginBottom: 10,
+                border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 15 };
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex",
+                  alignItems: "center", justifyContent: "center", padding: 20,
+                  fontFamily: "'Inter',system-ui,sans-serif" }}>
+      <form onSubmit={submit} style={{ width: "100%", maxWidth: 340, background: C.card,
+              border: `1px solid ${C.border}`, borderRadius: 12, padding: 22 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 4 }}>
+          <div style={{ width: 30, height: 30, borderRadius: 8, background: `linear-gradient(135deg,${C.accent},${C.blue})`,
+                        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>⚽</div>
+          <div style={{ fontSize: 17, fontWeight: 800 }}>ValueBet 精算系统</div>
+        </div>
+        <div style={{ fontSize: 11, color: C.textDim, marginBottom: 16 }}>
+          {mode === "in" ? "登录后才能查看你的预测和实盘记录" : "创建账号"}
+        </div>
+
+        <input style={inp} type="email" value={email} onChange={e => setEmail(e.target.value)}
+               placeholder="邮箱" autoComplete="email" required />
+        <input style={inp} type="password" value={pw} onChange={e => setPw(e.target.value)}
+               placeholder="密码（至少 6 位）" autoComplete={mode === "in" ? "current-password" : "new-password"}
+               minLength={6} required />
+
+        {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 10, lineHeight: 1.6 }}>{err}</div>}
+        {msg && <div style={{ fontSize: 12, color: C.accent, marginBottom: 10, lineHeight: 1.6 }}>{msg}</div>}
+
+        <button type="submit" disabled={busy}
+          style={{ width: "100%", padding: "10px", borderRadius: 8, border: "none", cursor: "pointer",
+                   background: C.accent, color: C.bg, fontWeight: 800, fontSize: 14, opacity: busy ? 0.6 : 1 }}>
+          {busy ? "…" : mode === "in" ? "登录" : "注册"}
+        </button>
+        <div style={{ textAlign: "center", marginTop: 12 }}>
+          <button type="button" onClick={() => { setMode(mode === "in" ? "up" : "in"); setErr(null); setMsg(null); }}
+            style={{ background: "none", border: "none", color: C.textDim, fontSize: 11.5, cursor: "pointer" }}>
+            {mode === "in" ? "还没有账号？注册" : "已有账号？去登录"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function StatusBanner({ status, updating, onUpdateNow }) {
   if (!status) return null;
 
