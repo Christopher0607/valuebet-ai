@@ -128,7 +128,46 @@ export default function App() {
     setStarting(false);
   }, []);
 
-  useEffect(() => { loadAll(); }, [loadAll]);
+  // 恢复已有会话，并把 authReady 置位。
+  //
+  // 为什么需要 authReady 这个中间态：supabase-js 把令牌存在 localStorage，
+  // 但读回来是异步的。在读完之前，session 是 null——此时如果直接按
+  // 「没登录」处理，每次刷新页面都会先闪一下登录页，已登录的用户也会
+  // 被当成未登录。所以 authReady 为 false 时既不进主界面也不进登录页。
+  //
+  // 这个 effect 之前是缺的（setAuthReady 在整个文件里没有任何调用点），
+  // 于是云端 authReady 恒为 false，页面永远停在那个转圈上，连登录页
+  // 都到不了。本地模式看不出来：isAuthEnabled 为 false 时初始值就是 true。
+  // 教训跟 04 号文档里那些一样——本地跑得好好的，只有真部署才暴露。
+  useEffect(() => {
+    if (!isAuthEnabled) return;
+    let cancelled = false;
+
+    // 兜底：不管 getSession 成功、失败还是卡住，都必须让 authReady 变 true，
+    // 否则又回到「永远转圈」。拿不到会话就当没登录，去登录页重新登。
+    const settle = (s) => {
+      if (cancelled) return;
+      setSession(s ?? null);
+      setAuthReady(true);
+    };
+
+    supabase.auth.getSession()
+      .then(({ data }) => settle(data?.session))
+      .catch(() => settle(null));
+
+    // 令牌自动续期、在别的标签页登出等情况都从这里回调
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, s) => settle(s));
+
+    return () => { cancelled = true; sub?.subscription?.unsubscribe(); };
+  }, []);
+
+  // 拉数据。云端要等「认证已就绪且已登录」，否则第一次请求必然 401。
+  // 这个依赖数组也是登录成功后自动加载数据的触发点——原来依赖是空的，
+  // 只在挂载时跑一次（那次还没登录），登录后界面会一直空着。
+  useEffect(() => {
+    if (isAuthEnabled && (!authReady || !session)) return;
+    loadAll();
+  }, [authReady, session, loadAll]);
 
   // If we land in the "first run still in flight" state (see StatusBanner),
   // poll briefly until it resolves so the page updates itself without the
@@ -277,7 +316,8 @@ export default function App() {
         ::-webkit-scrollbar { width: 5px; }
         ::-webkit-scrollbar-track { background: ${C.bg}; }
         ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 3px; }
-        @keyframes spin { to { transform: rotate(360deg); } }
+        /* @keyframes spin 移到了 index.html —— 提前 return 的登录页/认证
+           加载态渲染不到这个 style 标签，放这里那两处的圈不会转 */
         code { font-family: 'SF Mono', Consolas, monospace; }
       `}</style>
 
