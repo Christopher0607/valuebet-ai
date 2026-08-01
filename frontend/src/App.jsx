@@ -71,6 +71,7 @@ export default function App() {
   const [realBets, setRealBets] = useState([]);
   const [bankroll, setBankroll] = useState(null);
   const [settings, setSettings] = useState(null);
+  const [parlayBets, setParlayBets] = useState([]);
   const [showSett, setShowSett] = useState(false);
   const [loading, setLoading]   = useState(true);
   const [apiError, setApiError] = useState(null);
@@ -84,7 +85,7 @@ export default function App() {
     setLoading(true);
     setApiError(null);
     try {
-      const [st, all, bt, vb, rb, br, se, cp] = await Promise.all([
+      const [st, all, bt, vb, rb, br, se, cp, pl] = await Promise.all([
         api("/status"),
         api("/matches"),
         api("/backtest-summary"),
@@ -95,6 +96,11 @@ export default function App() {
         // 赛事名单单独取：backtest-summary 里的 by_competition 会跳过
         // 「还没有已完赛比赛」的赛事，拿它当赛事全集会漏掉新赛事
         api("/competitions"),
+        // 串关注单。原来只拉 /real-bets（RealBet 表），而串关记在 ParlayBet
+        // 表里，两张表从不汇合——实盘页因此看不到任何串关，尽管资金曲线
+        // （/bankroll-summary）一直把串关算进去了。用户反馈的
+        // 「串关的下注和回报没有记录进实盘」就是这个。
+        api("/parlay-bets"),
       ]);
       setStatus(st);
       setMatches(all);
@@ -104,6 +110,7 @@ export default function App() {
       setRealBets(rb);
       setBankroll(br);
       setSettings(se);
+      setParlayBets(pl || []);
     } catch (e) {
       // 刚启动那十几秒后端可能还没就绪（uvicorn 还没绑定端口，或者首次
       // 全量更新正在写库）。直接甩「无法连接本地后端」会让人以为服务没起，
@@ -579,7 +586,8 @@ export default function App() {
         )}
 
         {!loading && tab === "realbets" && settings && (
-          <RealBetsTab realBets={shownRealBets} bankroll={bankroll} settings={settings} />
+          <RealBetsTab realBets={shownRealBets} bankroll={bankroll} settings={settings}
+            parlays={parlayBets.filter(p => p.kind === "real")} />
         )}
 
         {!loading && tab === "chart" && bankroll && (
@@ -1069,9 +1077,14 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
 }
 
 // ── Real Bets Tab ────────────────────────────────────────────
-function RealBetsTab({ realBets, bankroll, settings }) {
+function RealBetsTab({ realBets, bankroll, settings, parlays = [] }) {
   const pending = realBets.filter(b => b.result === "pending");
   const settled = realBets.filter(b => b.result !== "pending");
+  const pSettled = parlays.filter(p => p.result !== "pending");
+  // 串关的本金和回报要跟单场一起计入这一页的合计，否则「实盘盈亏」这个数
+  // 跟资金曲线对不上——曲线一直是把串关算进去的
+  const pStake = parlays.reduce((s, p) => s + (p.stake || 0), 0);
+  const pPnl = pSettled.reduce((s, p) => s + (p.pnl || 0), 0);
 
   return (
     <div>
@@ -1079,6 +1092,45 @@ function RealBetsTab({ realBets, bankroll, settings }) {
       <div style={{ background: C.purpleDim, border: `1px solid ${C.purple}44`, borderRadius: 8, padding: "9px 13px", fontSize: 11, color: C.purple, marginBottom: 12 }}>
         💡 在「预测」页点「💵 实盘」按钮记录你真实下的注。比赛结束后系统每12小时自动结算盈亏。
       </div>
+
+      {/* 串关是单独一张表（ParlayBet），一注对应 3-8 场比赛，塞不进上面那个
+          按单场排的表格，所以单独列一段。原来这一页完全不显示串关，
+          于是「串关下注和回报没进实盘」——其实记下来了，只是没地方看。 */}
+      {parlays.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 7, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+            <span style={{ fontWeight: 700, color: C.text }}>🎯 串关注单 {parlays.length} 注</span>
+            <span>本金合计 {Math.round(pStake).toLocaleString()} · 已结算盈亏
+              <strong style={{ color: pPnl >= 0 ? C.accent : C.red, marginLeft: 4 }}>{fnum(pPnl)}</strong>
+            </span>
+          </div>
+          {parlays.map(p => (
+            <div key={p.id} style={{ background: C.card, border: `1px solid ${p.result === "win" ? C.accent + "66" : p.result === "loss" ? C.red + "66" : C.border}`,
+                                     borderRadius: 9, padding: "10px 12px", marginBottom: 7 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+                <span style={{ fontWeight: 800, fontSize: 12 }}>
+                  {p.legs?.length || 0} 串 1 · 总赔率 {fod(p.odds_used)}
+                </span>
+                <span style={{ fontSize: 11 }}>
+                  本金 {Math.round(p.stake).toLocaleString()} ·{" "}
+                  <strong style={{ color: p.result === "win" ? C.accent : p.result === "loss" ? C.red : C.gold }}>
+                    {p.result === "pending" ? "待结算" : p.result === "win" ? `赢 ${fnum(p.pnl)}` : `输 ${fnum(p.pnl)}`}
+                  </strong>
+                </span>
+              </div>
+              {(p.legs || []).map((l, i) => (
+                <div key={i} style={{ fontSize: 10.5, color: C.textDim, paddingLeft: 8, lineHeight: 1.7 }}>
+                  · {l.team1} vs {l.team2} — 押 {l.outcome === "home" ? l.team1 : l.outcome === "away" ? l.team2 : "平局"} @ {fod(l.odds)}
+                  {/* 后端不返回逐腿的输赢，只返回比分。直接显示比分，
+                      是赢是输一眼能看出来，也不用前端再判一次（判重了就
+                      有两处结算逻辑，早晚会不一致）。 */}
+                  {l.score && <span style={{ color: C.text, marginLeft: 5 }}>({l.score})</span>}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 12 }}>
         <Stat label="总注数" val={realBets.length} color={C.purple} />
         <Stat label="赢注" val={settled.filter(b => b.result === "win").length} color={C.accent} />
