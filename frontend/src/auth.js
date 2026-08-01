@@ -16,6 +16,14 @@ const ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export const isAuthEnabled = Boolean(URL && ANON);
 
+// 登录页在报「Invalid API key」时要把这两个显示出来。Supabase 那句报错
+// 不说是哪个项目、也不说用了哪个 key，光看它没法判断到底是 URL 配错了、
+// key 配错了、还是两个属于不同项目——只能一个个试。把实际用的值摆出来，
+// 一眼就能跟 Supabase 后台对上。
+// 两个都是公开值（本来就打包进前端），显示出来不泄露任何东西。
+export const supabaseUrl = URL || null;
+export const supabaseKeyHint = ANON ? `${ANON.slice(0, 12)}…${ANON.slice(-4)}` : null;
+
 export const supabase = isAuthEnabled
   ? createClient(URL, ANON, {
       auth: {

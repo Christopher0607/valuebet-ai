@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { isAuthEnabled, supabase, getToken, signIn, signUp, signOut } from "./auth";
+import { isAuthEnabled, supabase, getToken, signIn, signUp, signOut, supabaseUrl, supabaseKeyHint } from "./auth";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 // 打包后走同源相对路径，不写死主机名——后端本来就在托管这份前端，
@@ -237,14 +237,47 @@ export default function App() {
   const shownBets     = bets.filter(b => comp == null || b.competition_id == null || b.competition_id === comp);
   const shownRealBets = realBets.filter(b => comp == null || b.competition_id == null || b.competition_id === comp);
 
-  const backtest = (comp != null
-    ? backtestByComp.find(b => b.competition_id === comp)
-    : backtestByComp[0]) || null;
-  // 统计栏到底在显示哪个赛事——原来这里完全没有标签，世界杯的数字
-  // 看起来像是全站总体数字
-  const backtestLabel = backtest
-    ? backtest.competition_name
-    : (comp != null ? (competitions.find(c => c.id === comp)?.name_zh || "该赛事") : null);
+  // 「全部」模式下顶部统计栏显示什么。
+  //
+  // 原来是 backtestByComp[0]——后端按 Competition.id 升序返回，第一个是
+  // 世界杯，于是选「全部」看到的其实是世界杯的准确率和 RPS。标签里虽然
+  // 带了赛事名，但它挂在顶部总览的位置上，读起来就是全站数字。
+  //
+  // 改成按场次加权的合计：
+  //   准确率   = 所有猜对的场次 / 所有场次
+  //   平均 RPS = Σ(赛事均值 × 该赛事场次) / Σ场次，即全部比赛 RPS 的均值
+  //
+  // 跟 CLAUDE.md 里那条禁令的区别要说清楚，否则以后会有人把这段删掉：
+  // 被禁的是**把不同赛事的比率直接平均**（世界杯 67% 和英超 52% 平均成
+  // 59.5%，那个数哪个赛事都不代表），以及拿单个赛事冒充总体——就是这次
+  // 的 bug。按场次加权的合计不属于这两种，它就是「这批比赛里猜对了多少」，
+  // 是良定义的。
+  //
+  // 它真正的局限在别处：赛事构成一变这个数就跟着变（多抓一个联赛进来，
+  // 总体准确率会朝那个联赛的难度移动），所以**不能拿它跟历史数字比长短**，
+  // 也不能用它评价模型变好还是变坏。要比较就看「📊 回测」标签，那里是
+  // 按赛事分开列的。
+  const pooledBacktest = backtestByComp.length ? (() => {
+    const total   = backtestByComp.reduce((s, b) => s + b.total, 0);
+    const correct = backtestByComp.reduce((s, b) => s + b.correct, 0);
+    if (!total) return null;
+    return {
+      total, correct,
+      accuracy: correct / total,
+      // 后端把每个赛事的 avg_rps 四舍五入到 4 位小数才传过来，所以这里
+      // 加权还原出的总体均值有 ~1e-5 量级的误差。显示只到 3 位，无影响。
+      avg_rps: backtestByComp.reduce((s, b) => s + b.avg_rps * b.total, 0) / total,
+    };
+  })() : null;
+
+  const backtest = comp != null
+    ? (backtestByComp.find(b => b.competition_id === comp) || null)
+    : pooledBacktest;
+
+  const backtestLabel = comp != null
+    ? (backtestByComp.find(b => b.competition_id === comp)?.competition_name
+       || competitions.find(c => c.id === comp)?.name_zh || "该赛事")
+    : `全部${backtestByComp.length}赛事`;
 
   // 启用认证但还没登录 → 登录页。本地模式 authReady 一开始就是 true，
   // session 永远是 null，这个分支不会进，行为跟以前完全一样。
@@ -584,6 +617,22 @@ function LoginScreen({ onSignedIn }) {
                minLength={6} required />
 
         {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 10, lineHeight: 1.6 }}>{err}</div>}
+        {/* 「Invalid API key」是 Supabase 最没信息量的一句报错：它不说是哪个
+            项目、也不说收到的是哪个 key。真正的原因几乎总是 URL 和 key 属于
+            **不同的 Supabase 项目**（或者其中一个粘贴时带了空格/被截断）。
+            把这个页面实际在用的两个值摆出来，直接跟后台对照就行。 */}
+        {err && /api key/i.test(err) && (
+          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 10, lineHeight: 1.7,
+                        background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 10px" }}>
+            这个页面连的是：
+            <div style={{ color: C.text, wordBreak: "break-all", margin: "4px 0" }}>{supabaseUrl || "（未配置 VITE_SUPABASE_URL）"}</div>
+            用的 key：<span style={{ color: C.text }}>{supabaseKeyHint || "（未配置）"}</span>
+            <div style={{ marginTop: 6 }}>
+              去 Supabase 后台确认这两个来自**同一个项目**。不一致的话改 Vercel 的
+              环境变量，然后必须重新部署才生效。
+            </div>
+          </div>
+        )}
         {msg && <div style={{ fontSize: 12, color: C.accent, marginBottom: 10, lineHeight: 1.6 }}>{msg}</div>}
 
         <button type="submit" disabled={busy}
