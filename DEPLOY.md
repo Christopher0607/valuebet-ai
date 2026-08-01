@@ -103,7 +103,18 @@
 ## 三、Vercel（前端）
 
 1. vercel.com → New Project → 选同一个仓库。
-2. **Root Directory 设成 `frontend`**（重要，否则它会在仓库根目录找不到前端）。
+2. Root Directory 保持默认（仓库根目录）即可——根目录的 `vercel.json` 会
+   进 `frontend/` 构建、把 `frontend/dist` 作为产物发布。
+
+   > 设成 `frontend` 也能用，那时生效的是 `frontend/vercel.json`，两份配置等价。
+   >
+   > 之前踩过的坑：Root Directory 留在根目录、而根目录又没有 `vercel.json` 时，
+   > Vercel 因为找不到 `package.json` 不会把它当前端项目，直接把仓库根目录
+   > 当静态站点发布。构建显示 **Ready**，但根目录没有 `index.html`，
+   > 打开任何路径都是 **404: NOT_FOUND**——是「成功地发布了空站点」，
+   > 不是构建失败，所以日志里看不出问题。根目录这份 `vercel.json` 就是为了
+   > 堵死这个失败模式：无论 Root Directory 指哪边都能构建出正确的产物。
+
 3. **Environment Variables** 加三个（参考 `frontend/.env.example`）：
 
    ```
@@ -112,8 +123,16 @@
    VITE_SUPABASE_ANON_KEY = eyJhbGciOi...
    ```
 
+   > `VITE_` 开头的变量是**打包时**替换进代码的，不是运行时读的。
+   > 所以改完这三个值必须重新构建（Deployments → 最新那条 → `···` → Redeploy，
+   > 取消勾选 Build Cache）才会生效，光在设置页保存没有任何作用。
+
 4. 部署完拿到 `https://你的项目.vercel.app`，回 Railway 把这个域名填进
-   `FRONTEND_ORIGINS`，然后 Railway 会自动重启。
+   `FRONTEND_ORIGINS`（带 `https://`，结尾不要斜杠——CORS 是精确字符串比对），
+   然后 Railway 会自动重启。
+
+   注意用**生产域名**访问。Vercel 每个 preview 部署都有独立域名，不在白名单里，
+   浏览器会拦掉它的跨域请求。
 
 ---
 
