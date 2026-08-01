@@ -481,7 +481,7 @@ export default function App() {
         </div>
 
         <div style={{ display: "flex", gap: 4, marginTop: 10, flexWrap: "wrap" }}>
-          {[["strategy", "💰 价格策略"], ["upcoming", "⚡ 预测"], ["parlay", "🎯 串关推荐"], ["backtest", "📊 回测"], ["bets", "🎲 虚拟盘"], ["realbets", "💵 实盘"], ["chart", "📈 走势"]].map(([k, l]) => (
+          {[["upcoming", "⚡ 预测"], ["parlay", "🎯 串关推荐"], ["backtest", "📊 回测"], ["bets", "🎲 虚拟盘"], ["realbets", "💵 实盘"], ["chart", "📈 走势"]].map(([k, l]) => (
             <button
               key={k}
               onClick={() => setTab(k)}
@@ -492,8 +492,7 @@ export default function App() {
           ))}
         </div>
 
-        {/* 赛事筛选。价格策略页不依赖赛程（手输赔率），所以那一页不显示 */}
-        {competitions.length > 0 && tab !== "strategy" && (
+        {competitions.length > 0 && (
           <div style={{ display: "flex", gap: 4, marginTop: 7, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, marginRight: 2 }}>赛事</span>
             {[{ id: null, name_zh: "全部" }, ...competitions].map(c => {
@@ -559,12 +558,12 @@ export default function App() {
             )}
             <DayGroups matches={upcoming}
               renderMatch={m => <MatchCard key={m.id} match={m} settings={settings}
-                                            provisional={isProvisional(m)} onRefresh={loadAll} />} />
+                                            provisional={isProvisional(m)} onRefresh={() => loadAll(true)} />} />
           </div>
         )}
 
         {!loading && tab === "parlay" && settings && (
-          <ParlaySuggestTab upcoming={upcoming} settings={settings} onRefresh={loadAll} />
+          <ParlaySuggestTab upcoming={upcoming} settings={settings} onRefresh={() => loadAll(true)} />
         )}
 
         {!loading && tab === "backtest" && (
@@ -659,7 +658,6 @@ export default function App() {
           <ChartTab bankroll={bankroll} settings={settings} />
         )}
 
-        {!loading && tab === "strategy" && <StrategyTab />}
       </div>
     </div>
   );
@@ -1157,6 +1155,9 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [] }) {
   // 跟资金曲线对不上——曲线一直是把串关算进去的
   const pStake = parlays.reduce((s, p) => s + (p.stake || 0), 0);
   const pPnl = pSettled.reduce((s, p) => s + (p.pnl || 0), 0);
+  // 总投注金额：单场实盘 + 串关实盘的本金合计，不分是否已结算——
+  // 「投了多少钱」这个数不该因为比赛还没开打就不算数
+  const totalStake = realBets.reduce((s, b) => s + (b.stake_real || 0), 0) + pStake;
 
   return (
     <div>
@@ -1204,14 +1205,17 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [] }) {
         </div>
       )}
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 12 }}>
-        <Stat label="总注数" val={realBets.length} color={C.purple} />
+        {/* 总注数和总投注金额都把单场实盘和串关实盘合起来算——串关此前
+            完全不计入这一页的任何统计，用户反馈「串关记录没进实盘」，
+            上面已经把串关列出来了，这两个数也要跟着算，不然列表里看得到
+            串关、统计栏却当它不存在，看起来还是缺了一块。 */}
+        <Stat label="总注数" val={realBets.length + parlays.length} color={C.purple} />
+        <Stat label="总投注金额" val={Math.round(totalStake).toLocaleString()} color={C.text} />
         <Stat label="赢注" val={settled.filter(b => b.result === "win").length} color={C.accent} />
         <Stat label="待结算" val={pending.length} color={C.gold} />
         <Stat label="实盘盈亏" val={fnum(bankroll?.real?.total_pnl)} color={(bankroll?.real?.total_pnl || 0) >= 0 ? C.accent : C.red} />
         <Stat label="实盘ROI" val={bankroll?.real ? bankroll.real.roi_pct.toFixed(1) + "%" : "—"} color={(bankroll?.real?.roi_pct || 0) >= 0 ? C.accent : C.red} />
         <Stat label="胜率" val={settled.length ? pct(settled.filter(b => b.result === "win").length / settled.length) : "—"} color={C.blue} />
-        <Stat label="" val="" color={C.textDim} />
-        <Stat label="" val="" color={C.textDim} />
       </div>
       {realBets.length === 0 && <Empty text="还没有实盘记录。去「预测」页输入赔率，点击「💵 实盘」按钮。" />}
       {realBets.map(b => {
@@ -1571,295 +1575,6 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
   );
 }
 
-// ══════════════════════════════════════════════════════════
-// 价格策略页
-// ══════════════════════════════════════════════════════════
-// 这一页跟「预测」页是两套独立的东西，刻意不显示任何模型概率。
-// handoff/09 用 141,287 场证明模型对市场价格的增量信息为零（t=-0.2），
-// 所以这里的判断只看两件事：赔率落在偏差的哪一侧、你拿到的价有多好。
-// 把模型概率摆在旁边只会让人以为它参与了决策。
-
-const LEVEL_COLOR = {
-  ok: C.accent, bad_price: C.red, avoid: C.red,
-  need_price_check: C.gold, none: C.textDim, unknown: C.textDim,
-};
-
-function StrategyTab() {
-  const [odds, setOdds] = useState("");
-  const [avg, setAvg] = useState("");
-  const [best, setBest] = useState("");
-  const [res, setRes] = useState(null);
-  const [legs, setLegs] = useState([]);
-  const [parlay, setParlay] = useState(null);
-  const [margin, setMargin] = useState(0);
-  const [log, setLog] = useState(null);
-  const [desc, setDesc] = useState("");
-  const [saving, setSaving] = useState(false);
-  // 默认走「同场三个赔率」——它只需要你自己平台的报价，不依赖任何行情数据
-  const [mode, setMode] = useState("vig");
-  const [drawOdds, setDrawOdds] = useState("");
-  const [awayOdds, setAwayOdds] = useState("");
-  const [pick, setPick] = useState(null);
-
-  const loadLog = useCallback(async () => {
-    try { setLog(await api("/price-log")); } catch { /* 后端没起时静默 */ }
-  }, []);
-  useEffect(() => { loadLog(); }, [loadLog]);
-
-  // 赔率一变就重算，不需要按按钮。
-  //
-  // 两条判断路径，取决于你手上有什么：
-  //   A「同场三个赔率」——只要你自己平台的主/平/客，就能算出这家的抽水，
-  //     而抽水才是真正吃掉优势的量。多数人只有这个，所以它是默认路径。
-  //   B「跨平台比价」——填市场平均价和最高价，算价格捕获率。更精细，
-  //     但要求你能查到行情。
-  // 两条路是同一批实测数据的两种坐标表达，结论一致。
-  useEffect(() => {
-    const o = parseFloat(odds);
-    const a = parseFloat(avg), b = parseFloat(best);
-    const d = parseFloat(drawOdds), w = parseFloat(awayOdds);
-    let cancelled = false;
-
-    if (mode === "vig") {
-      if (!(o > 1 && d > 1 && w > 1)) { setRes(null); return; }
-      api("/strategy/evaluate-simple", {
-        method: "POST",
-        body: JSON.stringify({ odds_home: o, odds_draw: d, odds_away: w, pick }),
-      }).then(r => { if (!cancelled) setRes(r); })
-        .catch(() => { if (!cancelled) setRes(null); });
-    } else {
-      if (!o || o <= 1) { setRes(null); return; }
-      const body = { odds: o };
-      if (a > 1 && b > 1) { body.market_avg = a; body.market_best = b; }
-      api("/strategy/evaluate", { method: "POST", body: JSON.stringify(body) })
-        .then(r => { if (!cancelled) setRes(r); })
-        .catch(() => { if (!cancelled) setRes(null); });
-    }
-    return () => { cancelled = true; };
-  }, [mode, odds, avg, best, drawOdds, awayOdds, pick]);
-
-  useEffect(() => {
-    if (!legs.length) { setParlay(null); return; }
-    api("/strategy/parlay", {
-      method: "POST",
-      body: JSON.stringify({ leg_edges: legs.map(l => l.edge), margin_per_leg: margin }),
-    }).then(setParlay).catch(() => setParlay(null));
-  }, [legs, margin]);
-
-  const canAddLeg = res && res.expected_roi != null;
-
-  async function saveLog() {
-    const o = parseFloat(odds), a = parseFloat(avg), b = parseFloat(best);
-    if (!(o > 1 && a > 1 && b > 1)) return;
-    setSaving(true);
-    try {
-      await api("/price-log", {
-        method: "POST",
-        body: JSON.stringify({ match_desc: desc || null, my_odds: o, market_avg: a, market_best: b }),
-      });
-      await loadLog();
-      setDesc("");
-    } finally { setSaving(false); }
-  }
-
-  const inp = { width: "100%", padding: "8px 10px", borderRadius: 7, border: `1px solid ${C.border}`,
-                background: C.surface, color: C.text, fontSize: 14, fontWeight: 700 };
-  const lbl = { fontSize: 10, color: C.textDim, marginBottom: 4, fontWeight: 700 };
-
-  return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14 }}>
-        <SL>输入赔率</SL>
-        <div style={{ display: "flex", gap: 6, marginTop: 8, marginBottom: 10, flexWrap: "wrap" }}>
-          {[["vig", "同场三个赔率"], ["capture", "跨平台比价"]].map(([k, l]) => (
-            <button key={k} onClick={() => { setMode(k); setRes(null); }}
-              style={{ padding: "6px 12px", borderRadius: 7, fontSize: 11, fontWeight: 700,
-                       border: `1px solid ${mode === k ? C.accent : C.border}`,
-                       background: mode === k ? C.accentDim : "transparent",
-                       color: mode === k ? C.accent : C.textDim }}>{l}</button>
-          ))}
-        </div>
-
-        {mode === "vig" ? (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10 }}>
-              <div><div style={lbl}>主胜 *</div>
-                <input style={inp} value={odds} onChange={e => setOdds(e.target.value)} placeholder="1.85" inputMode="decimal" /></div>
-              <div><div style={lbl}>平局 *</div>
-                <input style={inp} value={drawOdds} onChange={e => setDrawOdds(e.target.value)} placeholder="3.50" inputMode="decimal" /></div>
-              <div><div style={lbl}>客胜 *</div>
-                <input style={inp} value={awayOdds} onChange={e => setAwayOdds(e.target.value)} placeholder="4.20" inputMode="decimal" /></div>
-            </div>
-            <div style={{ display: "flex", gap: 6, marginTop: 9, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={{ ...lbl, marginBottom: 0 }}>押哪边</span>
-              {[[null, "自动（热门侧）"], ["home", "主胜"], ["draw", "平局"], ["away", "客胜"]].map(([k, l]) => (
-                <button key={String(k)} onClick={() => setPick(k)}
-                  style={{ padding: "4px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700,
-                           border: `1px solid ${pick === k ? C.accent : C.border}`,
-                           background: pick === k ? C.accentDim : "transparent",
-                           color: pick === k ? C.accent : C.textDim }}>{l}</button>
-              ))}
-            </div>
-            <div style={{ fontSize: 10, color: C.textDim, marginTop: 9, lineHeight: 1.6 }}>
-              <strong style={{ color: C.text }}>只要你自己平台的三个赔率就够了</strong>，不用查行情。
-              系统从这三个数算出这家的抽水，而抽水才是真正吃掉优势的量：
-              抽水 <strong style={{ color: C.text }}>低于 1.95%</strong> 押热门才有得赚，
-              6.4% 的话是 -3.28%。多数软盘 1X2 抽水 5-7%，只有锐盘和交易所能到 2% 附近。
-            </div>
-          </>
-        ) : (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
-              <div><div style={lbl}>你的平台赔率 *</div>
-                <input style={inp} value={odds} onChange={e => setOdds(e.target.value)} placeholder="1.45" inputMode="decimal" /></div>
-              <div><div style={lbl}>市场平均赔率</div>
-                <input style={inp} value={avg} onChange={e => setAvg(e.target.value)} placeholder="1.42" inputMode="decimal" /></div>
-              <div><div style={lbl}>全市场最高赔率</div>
-                <input style={inp} value={best} onChange={e => setBest(e.target.value)} placeholder="1.50" inputMode="decimal" /></div>
-            </div>
-            <div style={{ fontSize: 10, color: C.textDim, marginTop: 8, lineHeight: 1.6 }}>
-              这条路更精细，但要求你能查到行情。查不到就用「同场三个赔率」——
-              两者是同一批实测数据的两种坐标表达，结论一致。
-            </div>
-          </>
-        )}
-      </div>
-
-      {res && (
-        <div style={{ background: C.card, border: `1px solid ${LEVEL_COLOR[res.level]}55`, borderRadius: 10, padding: 14 }}>
-          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
-            <MiniStat label="赔率档位" val={res.band || "—"} color={C.text} />
-            <MiniStat label="该档净超额" val={res.net_edge_best_price != null ? fev(res.net_edge_best_price) : "—"}
-                      color={evc(res.net_edge_best_price)} sub={res.n_bets ? `${res.n_bets.toLocaleString()} 注实测` : null} />
-            {res.price_capture != null &&
-              <MiniStat label="价格捕获率" val={pct(res.price_capture)}
-                        color={res.price_capture >= 0.8 ? C.accent : res.price_capture >= 0.6 ? C.gold : C.red} />}
-            {/* 抽水口径下显示的是这家平台的抽水，不是捕获率——两者互斥 */}
-            {res.vig != null &&
-              <MiniStat label="这家的抽水" val={pct(res.vig)}
-                        color={res.vig <= (res.breakeven_vig ?? 0.0195) ? C.accent : C.red}
-                        sub={`平衡线 ${pct(res.breakeven_vig ?? 0.0195)}`} />}
-            {res.expected_roi != null &&
-              <MiniStat label="预期 ROI" val={fev(res.expected_roi)} color={evc(res.expected_roi)} />}
-          </div>
-          <div style={{ fontSize: 12, color: C.text, lineHeight: 1.7, background: C.surface,
-                        borderRadius: 7, padding: "9px 11px" }}>
-            {res.text}
-          </div>
-
-          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-            <button
-              disabled={!canAddLeg}
-              onClick={() => { setLegs(l => [...l, { odds: parseFloat(odds), edge: res.expected_roi }]); }}
-              style={{ padding: "7px 13px", borderRadius: 7, fontSize: 11, fontWeight: 800,
-                       border: `1px solid ${canAddLeg ? C.accent : C.border}`,
-                       background: canAddLeg ? C.accentDim : "transparent",
-                       color: canAddLeg ? C.accent : C.textDim }}>
-              ＋ 加入串关
-            </button>
-            <input value={desc} onChange={e => setDesc(e.target.value)} placeholder="比赛备注（选填）"
-                   style={{ ...inp, flex: "1 1 140px", minWidth: 0, fontSize: 11, fontWeight: 600 }} />
-            <button disabled={saving || !(parseFloat(avg) > 1 && parseFloat(best) > 1)} onClick={saveLog}
-                    style={{ padding: "7px 13px", borderRadius: 7, fontSize: 11, fontWeight: 800,
-                             border: `1px solid ${C.blue}`, background: C.blueDim, color: C.blue }}>
-              {saving ? "…" : "记录这次价格"}
-            </button>
-          </div>
-          {!canAddLeg && (
-            <div style={{ fontSize: 10, color: C.textDim, marginTop: 6 }}>
-              要加入串关得先填市场平均价和最高价——串关会把价格好坏一起放大，
-              没有捕获率就算不出这条腿到底是正是负。
-            </div>
-          )}
-        </div>
-      )}
-
-      {legs.length > 0 && (
-        <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <SL>串关（{legs.length} 腿）</SL>
-            <button onClick={() => setLegs([])} style={{ fontSize: 10, color: C.textDim, background: "none", border: "none" }}>清空</button>
-          </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0" }}>
-            {legs.map((l, i) => (
-              <span key={i} style={{ fontSize: 11, padding: "4px 9px", borderRadius: 6,
-                                     background: C.surface, border: `1px solid ${C.border}`, color: C.text }}>
-                @{fod(l.odds)} <span style={{ color: evc(l.edge) }}>{fev(l.edge)}</span>
-                <button onClick={() => setLegs(x => x.filter((_, j) => j !== i))}
-                        style={{ marginLeft: 6, background: "none", border: "none", color: C.textDim }}>×</button>
-              </span>
-            ))}
-          </div>
-          <div style={{ ...lbl, marginTop: 6 }}>平台串关抽水（每腿）</div>
-          <select value={margin} onChange={e => setMargin(+e.target.value)} style={{ ...inp, maxWidth: 300, fontSize: 12 }}>
-            <option value={0}>0%（串关赔率 = 各腿相乘）</option>
-            <option value={0.01}>1%</option>
-            <option value={0.02}>2%（多数平台）</option>
-            <option value={0.03}>3%</option>
-          </select>
-          <div style={{ fontSize: 10, color: C.textDim, marginTop: 5, lineHeight: 1.6 }}>
-            实测方法：把各腿赔率乘起来，跟平台给的串关总赔率对一下，差多少就是抽水。
-            这个数很关键——单腿优势撑不住每腿 2% 的话，串关反而不如分开下。
-          </div>
-          {parlay && (
-            <div style={{ marginTop: 11, fontSize: 12, color: C.text, lineHeight: 1.7,
-                          background: C.surface, borderRadius: 7, padding: "9px 11px",
-                          border: `1px solid ${LEVEL_COLOR[parlay.level]}44` }}>
-              <div style={{ fontSize: 18, fontWeight: 900, color: evc(parlay.net_edge), marginBottom: 5 }}>
-                {fev(parlay.net_edge)}
-              </div>
-              {parlay.text}
-            </div>
-          )}
-        </div>
-      )}
-
-      {log && (
-        <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14 }}>
-          <SL>你的平台价格捕获率（{log.summary.n} 条观测）</SL>
-          <div style={{ fontSize: 13, color: log.summary.enough ? C.text : C.textDim,
-                        marginTop: 8, lineHeight: 1.7 }}>
-            {log.summary.mean_capture != null && (
-              <span style={{ fontSize: 24, fontWeight: 900,
-                             color: log.summary.mean_capture >= 0.6 ? C.accent
-                                  : log.summary.mean_capture <= 0.2 ? C.red : C.gold,
-                             marginRight: 10 }}>
-                f = {pct(log.summary.mean_capture)}
-              </span>
-            )}
-            {log.summary.verdict}
-          </div>
-          {log.rows.length > 0 && (
-            <div style={{ marginTop: 10, maxHeight: 200, overflowY: "auto" }}>
-              {log.rows.slice(0, 30).map(r => (
-                <div key={r.id} style={{ display: "flex", justifyContent: "space-between",
-                                         fontSize: 11, padding: "5px 0", borderBottom: `1px solid ${C.muted}` }}>
-                  <span style={{ color: C.textDim }}>{r.match_desc || fdatetime(r.logged_at)}</span>
-                  <span style={{ color: C.text }}>
-                    {fod(r.my_odds)} <span style={{ color: C.textDim }}>(均{fod(r.market_avg)} / 高{fod(r.market_best)})</span>
-                    <strong style={{ marginLeft: 8, color: r.capture >= 0.6 ? C.accent : r.capture <= 0.2 ? C.red : C.gold }}>
-                      {r.capture != null ? pct(r.capture) : "—"}
-                    </strong>
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {res?.reality_check && (
-        <div style={{ background: C.redDim, border: `1px solid ${C.red}44`, borderRadius: 10, padding: 13 }}>
-          <div style={{ fontSize: 11, fontWeight: 800, color: C.red, marginBottom: 7 }}>⚠ 三个不该被正数字盖掉的约束</div>
-          {Object.values(res.reality_check).map((t, i) => (
-            <div key={i} style={{ fontSize: 11, color: C.text, lineHeight: 1.7, marginBottom: 5 }}>· {t}</div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function MiniStat({ label, val, color, sub }) {
   return (
     <div>
@@ -1908,9 +1623,6 @@ function NoFixtures({ played, stale = [] }) {
         最后一场是 <strong style={{ color: C.text }}>{last.date}</strong>（{days} 天前），
         所以抓取本身是正常的。新赛季的赛程数据源还没发布，
         发布后系统会在下次更新时<strong style={{ color: C.text }}>自动接上</strong>，不需要改任何东西。
-      </div>
-      <div style={{ fontSize: 12, marginTop: 12, color: C.accent }}>
-        这期间「💰 价格策略」页照常可用——它只需要你手输赔率，不依赖赛程。
       </div>
       {stale.length > 0 && (
         <div style={{ fontSize: 11, marginTop: 14, color: C.textDim, maxWidth: 420, margin: "14px auto 0",
