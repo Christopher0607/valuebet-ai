@@ -54,6 +54,58 @@ _CAPTURE_CURVE = [
 ]
 BREAKEVEN_CAPTURE = 0.80   # 低于这个捕获率，方向选对了也是亏的
 
+# ── 抽水口径（推荐用这个）──────────────────────────────────
+# 上面那条捕获率曲线有个实用性问题：要算 f 你得知道「市场平均价」和
+# 「全市场最高价」，而多数人手上只有自己那家平台的报价。
+#
+# 但同一批实测数据可以换个坐标表达：**平台自己的抽水**。
+# 抽水从三个赔率直接算得出来，不需要任何外部行情：
+#     抽水 = 1/主胜赔率 + 1/平局赔率 + 1/客胜赔率 - 1
+# 抽水才是真正吃掉优势的那个量，捕获率只是它的一个代理。
+#
+# 同一次走查、同一批注单，把横轴从 f 换成抽水：
+#     抽水 6.82% → ROI -3.54%     抽水 3.10% → ROI -0.88%
+#     抽水 5.52% → ROI -2.67%     抽水 1.97% → ROI -0.04%
+#     抽水 4.28% → ROI -1.76%     抽水 0.88% → ROI +0.91%
+# 盈亏平衡点在**抽水约 1.95%**。这是个很低的门槛：多数软盘 1X2 抽水
+# 5-7%，只有锐盘和交易所能到 2% 附近。
+#
+# 注意这是押「赔率 < 2.0 的热门」这一档的曲线。冷门档无论抽水多低都是负的，
+# 因为那一侧的净超额本身就是负的（见 _BIAS_BANDS）。
+_VIG_CURVE = [
+    (0.0088, +0.0091), (0.0142, +0.0047), (0.0197, -0.0004), (0.0253, -0.0045),
+    (0.0310, -0.0088), (0.0428, -0.0176), (0.0552, -0.0267), (0.0682, -0.0354),
+]
+BREAKEVEN_VIG = 0.0195     # 抽水高于这个数，押热门也是亏的
+
+
+def vig_from_odds(odds_home: float, odds_draw: float, odds_away: float) -> Optional[float]:
+    """从一场比赛的三个赔率算出该平台的抽水。
+
+    这是本模块推荐的输入方式：只需要你自己平台的报价，不需要市场行情。
+    """
+    for o in (odds_home, odds_draw, odds_away):
+        if not o or o <= 1:
+            return None
+    return 1 / odds_home + 1 / odds_draw + 1 / odds_away - 1
+
+
+def _roi_at_vig(vig: float) -> float:
+    """按实测曲线插值出该抽水水平下押热门的预期 ROI。"""
+    lo_v, lo_r = _VIG_CURVE[0]
+    hi_v, hi_r = _VIG_CURVE[-1]
+    if vig <= lo_v:
+        return lo_r
+    if vig >= hi_v:
+        # 曲线外推：抽水每多 1 个百分点，ROI 大约少 1 个百分点
+        return hi_r - (vig - hi_v)
+    for i in range(len(_VIG_CURVE) - 1):
+        x0, y0 = _VIG_CURVE[i]
+        x1, y1 = _VIG_CURVE[i + 1]
+        if x0 <= vig <= x1:
+            return y0 + (y1 - y0) * (vig - x0) / (x1 - x0)
+    return hi_r
+
 OVERALL = {
     "n_matches": 141287,
     "favourite_net_edge_best_price": 0.0179,
@@ -268,6 +320,65 @@ CAPTURE_BY_LEGS = {
     0.8: {1: +0.0111, 2: +0.0204, 3: +0.0353, 4: +0.0471, 6: +0.0863},
     1.0: {1: +0.0167, 2: +0.0330, 3: +0.0524, 4: +0.0705, 6: +0.1458},
 }
+
+
+def advisory_from_three_odds(odds_home: float, odds_draw: float, odds_away: float,
+                             pick: Optional[str] = None) -> dict:
+    """**推荐入口**：只用你自己平台的三个赔率就能判断。
+
+    odds_home/draw/away  你的平台对这场比赛开的三个价
+    pick                 你想押哪个（'home'/'draw'/'away'）；不传就自动选热门那侧
+
+    相比 bet_advisory()，这个函数不需要「市场平均价」和「全市场最高价」——
+    实测把价格质量重新表达成了平台自己的抽水，而抽水从三个赔率直接算得出来。
+    """
+    vig = vig_from_odds(odds_home, odds_draw, odds_away)
+    if vig is None:
+        return {"level": "none", "text": "三个赔率都要填，且都必须大于 1。"}
+
+    picks = {"home": odds_home, "draw": odds_draw, "away": odds_away}
+    if pick is None:
+        # 不指定就选赔率最低的那个——热门-冷门偏差里占便宜的一侧
+        pick = min(picks, key=picks.get)
+    odds = picks.get(pick)
+    if not odds or odds <= 1:
+        return {"level": "none", "text": f"选项 {pick} 的赔率无效。"}
+
+    b = _band(odds)
+    zh = {"home": "主胜", "draw": "平局", "away": "客胜"}.get(pick, pick)
+    out = {"pick": pick, "odds": odds, "vig": round(vig, 4),
+           "band": b["band"] if b else None,
+           "breakeven_vig": BREAKEVEN_VIG,
+           "net_edge": round(b["net_edge_best_price"], 4) if b else None}
+
+    if b is None:
+        out["level"] = "none"
+        out["text"] = "赔率超出实测区间。"
+        return out
+
+    # 冷门侧：净超额本身就是负的，抽水再低也补不回来
+    if b["net_edge_best_price"] <= 0:
+        out["level"] = "avoid"
+        out["expected_roi"] = round(b["net_edge_best_price"] - vig / (1 + vig), 4)
+        out["text"] = (f"押{zh} @{odds:.2f} 落在 {b['band']} 档，该档实测净超额 "
+                       f"{b['net_edge_best_price']:+.2%}（{b['n_bets']:,} 注）。"
+                       f"这是热门-冷门偏差里吃亏的一侧——抽水再低也补不回来，不建议下。")
+        return out
+
+    roi = _roi_at_vig(vig)
+    out["expected_roi"] = round(roi, 4)
+    ok = vig <= BREAKEVEN_VIG
+    out["level"] = "ok" if ok else "bad_price"
+    if ok:
+        out["text"] = (f"押{zh} @{odds:.2f}（{b['band']} 档）。这家的抽水 {vig:.2%}，"
+                       f"低于 {BREAKEVEN_VIG:.2%} 的盈亏平衡线。该条件下实测 ROI 约 "
+                       f"{roi:+.2%}——薄，但为正。")
+    else:
+        out["text"] = (f"押{zh} @{odds:.2f} 方向对（{b['band']} 档净超额 "
+                       f"{b['net_edge_best_price']:+.2%}），但这家的抽水 {vig:.2%}，"
+                       f"高于 {BREAKEVEN_VIG:.2%} 的平衡线。该条件下实测 ROI 约 {roi:+.2%}"
+                       f"——选对了方向仍然是亏的。这不是选球的问题，是这家平台太贵。")
+    return out
 
 
 def reality_check() -> dict:

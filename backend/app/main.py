@@ -23,6 +23,7 @@ from .scheduler import start_scheduler, next_run_info
 from .model import expected_value, kelly_pct, BayesianTeamState, parlay_ev_and_risk, suggest_parlays
 from .ev_evidence import (
     bet_advisory, parlay_advisory, price_capture, reality_check,
+    advisory_from_three_odds, vig_from_odds, BREAKEVEN_VIG,
     _roi_at_capture, CAPTURE_BY_LEGS, TYPICAL_PARLAY_MARGIN_PER_LEG,
 )
 
@@ -905,6 +906,29 @@ def strategy_evaluate(payload: StrategyInput, db: Session = Depends(get_db)):
         "reality_check": reality_check(),
         "capture_table": {str(k): v for k, v in CAPTURE_BY_LEGS.items()},
     }
+
+
+class ThreeOddsInput(BaseModel):
+    """只需要你自己平台的三个赔率，不需要市场行情。"""
+    odds_home: float
+    odds_draw: float
+    odds_away: float
+    pick: Optional[str] = None          # 'home' | 'draw' | 'away'，不传则自动选热门侧
+
+
+@app.post("/api/strategy/evaluate-simple")
+def strategy_evaluate_simple(payload: ThreeOddsInput):
+    """推荐入口：从三个赔率算出该平台抽水，再判断这一注值不值得下。
+
+    /strategy/evaluate 要填「市场平均价」和「全市场最高价」才能算价格捕获率，
+    但多数人手上只有自己那家平台的报价。同一批实测数据换个坐标表达就绕开了
+    这个问题——抽水从三个赔率直接算得出来，而抽水才是真正吃掉优势的量
+    （捕获率只是它的代理）。
+    """
+    adv = advisory_from_three_odds(
+        payload.odds_home, payload.odds_draw, payload.odds_away, payload.pick
+    )
+    return {**adv, "reality_check": reality_check()}
 
 
 class StrategyParlayInput(BaseModel):

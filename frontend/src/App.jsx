@@ -1040,25 +1040,48 @@ function StrategyTab() {
   const [log, setLog] = useState(null);
   const [desc, setDesc] = useState("");
   const [saving, setSaving] = useState(false);
+  // 默认走「同场三个赔率」——它只需要你自己平台的报价，不依赖任何行情数据
+  const [mode, setMode] = useState("vig");
+  const [drawOdds, setDrawOdds] = useState("");
+  const [awayOdds, setAwayOdds] = useState("");
+  const [pick, setPick] = useState(null);
 
   const loadLog = useCallback(async () => {
     try { setLog(await api("/price-log")); } catch { /* 后端没起时静默 */ }
   }, []);
   useEffect(() => { loadLog(); }, [loadLog]);
 
-  // 赔率一变就重算，不需要按按钮
+  // 赔率一变就重算，不需要按按钮。
+  //
+  // 两条判断路径，取决于你手上有什么：
+  //   A「同场三个赔率」——只要你自己平台的主/平/客，就能算出这家的抽水，
+  //     而抽水才是真正吃掉优势的量。多数人只有这个，所以它是默认路径。
+  //   B「跨平台比价」——填市场平均价和最高价，算价格捕获率。更精细，
+  //     但要求你能查到行情。
+  // 两条路是同一批实测数据的两种坐标表达，结论一致。
   useEffect(() => {
     const o = parseFloat(odds);
-    if (!o || o <= 1) { setRes(null); return; }
-    const body = { odds: o };
     const a = parseFloat(avg), b = parseFloat(best);
-    if (a > 1 && b > 1) { body.market_avg = a; body.market_best = b; }
+    const d = parseFloat(drawOdds), w = parseFloat(awayOdds);
     let cancelled = false;
-    api("/strategy/evaluate", { method: "POST", body: JSON.stringify(body) })
-      .then(r => { if (!cancelled) setRes(r); })
-      .catch(() => { if (!cancelled) setRes(null); });
+
+    if (mode === "vig") {
+      if (!(o > 1 && d > 1 && w > 1)) { setRes(null); return; }
+      api("/strategy/evaluate-simple", {
+        method: "POST",
+        body: JSON.stringify({ odds_home: o, odds_draw: d, odds_away: w, pick }),
+      }).then(r => { if (!cancelled) setRes(r); })
+        .catch(() => { if (!cancelled) setRes(null); });
+    } else {
+      if (!o || o <= 1) { setRes(null); return; }
+      const body = { odds: o };
+      if (a > 1 && b > 1) { body.market_avg = a; body.market_best = b; }
+      api("/strategy/evaluate", { method: "POST", body: JSON.stringify(body) })
+        .then(r => { if (!cancelled) setRes(r); })
+        .catch(() => { if (!cancelled) setRes(null); });
+    }
     return () => { cancelled = true; };
-  }, [odds, avg, best]);
+  }, [mode, odds, avg, best, drawOdds, awayOdds, pick]);
 
   useEffect(() => {
     if (!legs.length) { setParlay(null); return; }
@@ -1092,19 +1115,59 @@ function StrategyTab() {
     <div style={{ display: "grid", gap: 12 }}>
       <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14 }}>
         <SL>输入赔率</SL>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 8 }}>
-          <div><div style={lbl}>你的平台赔率 *</div>
-            <input style={inp} value={odds} onChange={e => setOdds(e.target.value)} placeholder="1.45" inputMode="decimal" /></div>
-          <div><div style={lbl}>市场平均赔率</div>
-            <input style={inp} value={avg} onChange={e => setAvg(e.target.value)} placeholder="1.42" inputMode="decimal" /></div>
-          <div><div style={lbl}>全市场最高赔率</div>
-            <input style={inp} value={best} onChange={e => setBest(e.target.value)} placeholder="1.50" inputMode="decimal" /></div>
+        <div style={{ display: "flex", gap: 6, marginTop: 8, marginBottom: 10, flexWrap: "wrap" }}>
+          {[["vig", "同场三个赔率"], ["capture", "跨平台比价"]].map(([k, l]) => (
+            <button key={k} onClick={() => { setMode(k); setRes(null); }}
+              style={{ padding: "6px 12px", borderRadius: 7, fontSize: 11, fontWeight: 700,
+                       border: `1px solid ${mode === k ? C.accent : C.border}`,
+                       background: mode === k ? C.accentDim : "transparent",
+                       color: mode === k ? C.accent : C.textDim }}>{l}</button>
+          ))}
         </div>
-        <div style={{ fontSize: 10, color: C.textDim, marginTop: 8, lineHeight: 1.6 }}>
-          只填第一格也能判断方向，但<strong style={{ color: C.text }}>能不能赚钱由后两格决定</strong>
-          ——同一个赔率，价格捕获率 0% 是 -1.43%，100% 是 +1.67%。
-          平均价和最高价可以在任意赔率比较网站上查。
-        </div>
+
+        {mode === "vig" ? (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10 }}>
+              <div><div style={lbl}>主胜 *</div>
+                <input style={inp} value={odds} onChange={e => setOdds(e.target.value)} placeholder="1.85" inputMode="decimal" /></div>
+              <div><div style={lbl}>平局 *</div>
+                <input style={inp} value={drawOdds} onChange={e => setDrawOdds(e.target.value)} placeholder="3.50" inputMode="decimal" /></div>
+              <div><div style={lbl}>客胜 *</div>
+                <input style={inp} value={awayOdds} onChange={e => setAwayOdds(e.target.value)} placeholder="4.20" inputMode="decimal" /></div>
+            </div>
+            <div style={{ display: "flex", gap: 6, marginTop: 9, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ ...lbl, marginBottom: 0 }}>押哪边</span>
+              {[[null, "自动（热门侧）"], ["home", "主胜"], ["draw", "平局"], ["away", "客胜"]].map(([k, l]) => (
+                <button key={String(k)} onClick={() => setPick(k)}
+                  style={{ padding: "4px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                           border: `1px solid ${pick === k ? C.accent : C.border}`,
+                           background: pick === k ? C.accentDim : "transparent",
+                           color: pick === k ? C.accent : C.textDim }}>{l}</button>
+              ))}
+            </div>
+            <div style={{ fontSize: 10, color: C.textDim, marginTop: 9, lineHeight: 1.6 }}>
+              <strong style={{ color: C.text }}>只要你自己平台的三个赔率就够了</strong>，不用查行情。
+              系统从这三个数算出这家的抽水，而抽水才是真正吃掉优势的量：
+              抽水 <strong style={{ color: C.text }}>低于 1.95%</strong> 押热门才有得赚，
+              6.4% 的话是 -3.28%。多数软盘 1X2 抽水 5-7%，只有锐盘和交易所能到 2% 附近。
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+              <div><div style={lbl}>你的平台赔率 *</div>
+                <input style={inp} value={odds} onChange={e => setOdds(e.target.value)} placeholder="1.45" inputMode="decimal" /></div>
+              <div><div style={lbl}>市场平均赔率</div>
+                <input style={inp} value={avg} onChange={e => setAvg(e.target.value)} placeholder="1.42" inputMode="decimal" /></div>
+              <div><div style={lbl}>全市场最高赔率</div>
+                <input style={inp} value={best} onChange={e => setBest(e.target.value)} placeholder="1.50" inputMode="decimal" /></div>
+            </div>
+            <div style={{ fontSize: 10, color: C.textDim, marginTop: 8, lineHeight: 1.6 }}>
+              这条路更精细，但要求你能查到行情。查不到就用「同场三个赔率」——
+              两者是同一批实测数据的两种坐标表达，结论一致。
+            </div>
+          </>
+        )}
       </div>
 
       {res && (
@@ -1116,6 +1179,11 @@ function StrategyTab() {
             {res.price_capture != null &&
               <MiniStat label="价格捕获率" val={pct(res.price_capture)}
                         color={res.price_capture >= 0.8 ? C.accent : res.price_capture >= 0.6 ? C.gold : C.red} />}
+            {/* 抽水口径下显示的是这家平台的抽水，不是捕获率——两者互斥 */}
+            {res.vig != null &&
+              <MiniStat label="这家的抽水" val={pct(res.vig)}
+                        color={res.vig <= (res.breakeven_vig ?? 0.0195) ? C.accent : C.red}
+                        sub={`平衡线 ${pct(res.breakeven_vig ?? 0.0195)}`} />}
             {res.expected_roi != null &&
               <MiniStat label="预期 ROI" val={fev(res.expected_roi)} color={evc(res.expected_roi)} />}
           </div>
