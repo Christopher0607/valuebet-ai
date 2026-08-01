@@ -14,10 +14,11 @@
 还没拿到的：
 - [ ] 数据库连接串（Connect → Direct → **Session pooler**，不要 Direct connection，
       那个是 IPv6 only、Railway 连不上）
-- [ ] 确认签名方式：浏览器打开
-      `https://<project>.supabase.co/auth/v1/.well-known/jwks.json?apikey=<publishable key>`
-      - 返回 `{"keys":[{"kty":"EC",...}]}` → 新版，配 `SUPABASE_URL` + `SUPABASE_ANON_KEY`
-      - 返回 `{"keys":[]}` → 旧版，改配 `SUPABASE_JWT_SECRET`
+- [x] 签名方式已不需要确认（见下）
+      **这一步不用做了。** 实测该端点返回 "Secret API key required"——
+      取公钥反而要存一个高权限密钥，本末倒置。后端已改成把令牌交给
+      Supabase 的 /auth/v1/user 去验，跟签名算法无关，
+      只要 `SUPABASE_URL` + `SUPABASE_ANON_KEY`（都是公开值）。
 
   > 不带 `?apikey=` 会返回 `{"message":"No API key found in request"}`——
   > Supabase 把整个 /auth/v1 放在 API 网关后面。后端取公钥时也必须带这个头，
@@ -26,7 +27,7 @@
 踩过并已修的坑（别再走一遍）：
 - Supabase 给的连接串是 `postgres://`，SQLAlchemy 2.x 只认 `postgresql://`
 - 直连 5432 是 IPv6 only，Railway 连不上，要用 pooler
-- JWKS 端点要 apikey 头
+- JWKS 端点要 apikey 头，而且**只认 secret key**——所以干脆不走本地验签了
 - 只支持 HS256 的话新项目会全部 401，且报错看不出是算法问题
 
 ---

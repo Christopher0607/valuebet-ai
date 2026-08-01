@@ -12,11 +12,15 @@ Supabase Auth 校验。
 所以 require_auth_configured() 在检测到「用的是远程数据库（说明是真部署）
 但没有 JWT 密钥」时直接抛异常，让部署失败，逼你去补配置。
 
-Supabase 的令牌是 HS256 对称签名，密钥就是项目设置里的 JWT Secret，
-所以这里不需要 RSA/JWKS 那一套，也就不依赖 cryptography 扩展。
+验签怎么做：优先本地 HS256（配了 SUPABASE_JWT_SECRET 时，无网络往返）；
+否则把令牌交给 Supabase 的 /auth/v1/user 去验。后者跟签名算法无关，
+只需要 publishable key，理由见 _verify_via_supabase 的注释。
 """
 import os
+import time
 from typing import Optional
+
+import requests
 
 import jwt
 from fastapi import Depends, HTTPException, Request
@@ -26,39 +30,14 @@ SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "").strip()
 # Supabase 签发的令牌 aud 固定是 "authenticated"
 SUPABASE_JWT_AUDIENCE = os.environ.get("SUPABASE_JWT_AUDIENCE", "authenticated")
 
-# 新版 Supabase 项目用非对称签名，公钥走 JWKS。填了项目 URL 就用这条路。
+# 项目 URL。配了它（加上 anon key）就走「交给 Supabase 验」那条路。
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
 # publishable / anon key。公开值，前端包里本来就有一份。
-# 后端需要它**只是为了通过 Supabase API 网关去取公钥**，不用它做任何鉴权。
+# 后端需要它只是为了通过 Supabase 的 API 网关，不用它做任何鉴权。
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "").strip()
-JWKS_URL = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json" if SUPABASE_URL else ""
 
 # 两条路任意一条配上就算启用认证
-AUTH_ENABLED = bool(SUPABASE_JWT_SECRET or JWKS_URL)
-
-_jwk_cache = None
-
-
-def _jwk_client():
-    """PyJWKClient 自带公钥缓存，所以只建一次——每次请求都新建的话，
-    每个 API 调用都要多一次到 Supabase 的网络往返。
-
-    **必须带 apikey 头。** Supabase 的整个 /auth/v1 都在它的 API 网关后面，
-    连公开的 JWKS 端点也不例外，不带这个头会返回：
-        {"message":"No API key found in request"}
-    而 PyJWKClient 默认不发任何自定义头。少了它的后果是取公钥永远失败，
-    表现为所有请求 401、报错写「取签名公钥失败」——看起来像密钥配错了，
-    实际是缺一个请求头。
-
-    这里用的是 publishable（anon）key，它本来就是公开的、会打进前端包，
-    放在后端环境变量里没有任何额外风险。
-    """
-    global _jwk_cache
-    if _jwk_cache is None:
-        headers = {"apikey": SUPABASE_ANON_KEY} if SUPABASE_ANON_KEY else None
-        _jwk_cache = jwt.PyJWKClient(JWKS_URL, cache_keys=True, headers=headers)
-    return _jwk_cache
-
+AUTH_ENABLED = bool(SUPABASE_JWT_SECRET or (SUPABASE_URL and SUPABASE_ANON_KEY))
 
 def require_auth_configured() -> None:
     """启动时自检：真部署但没配认证 → 直接拒绝启动。
@@ -69,44 +48,83 @@ def require_auth_configured() -> None:
     """
     from .models import IS_SQLITE
 
-    if JWKS_URL and not SUPABASE_ANON_KEY:
+    if SUPABASE_URL and not SUPABASE_ANON_KEY:
         raise RuntimeError(
-            "拒绝启动：配了 SUPABASE_URL（走 JWKS 验签）但没有 SUPABASE_ANON_KEY。"
-            "Supabase 的 JWKS 端点在 API 网关后面，不带 apikey 头会返回 "
-            "'No API key found in request'，导致取公钥永远失败、所有请求 401。"
-            "请补上 SUPABASE_ANON_KEY（就是前端用的那个 sb_publishable_... ，公开值）。"
+            "拒绝启动：配了 SUPABASE_URL 但没有 SUPABASE_ANON_KEY。"
+            "验令牌要调 Supabase 的 /auth/v1/user，那个端点在 API 网关后面，"
+            "不带 apikey 头会被拒。请补上 SUPABASE_ANON_KEY"
+            "（就是前端用的那个 sb_publishable_... ，公开值，不是 secret key）。"
         )
     if not IS_SQLITE and not AUTH_ENABLED:
         raise RuntimeError(
             "拒绝启动：DATABASE_URL 指向远程数据库（说明这是公网部署），"
-            "但没有设置 SUPABASE_JWT_SECRET。这样启动的话所有接口都不需要登录，"
-            "你的实盘记录和资金曲线会完全暴露。请在部署平台的环境变量里补上"
-            "SUPABASE_JWT_SECRET（Supabase 控制台 → Project Settings → API → JWT Secret）。"
+            "但没有配置任何认证方式。这样启动的话所有接口都不需要登录，"
+            "你的实盘记录和资金曲线会完全暴露。请在部署平台补上 "
+            "SUPABASE_URL + SUPABASE_ANON_KEY（推荐），或 SUPABASE_JWT_SECRET。"
         )
 
 
-def _decode(token: str) -> dict:
-    """验签。同时支持 Supabase 的两代签名方式。
+_introspect_cache: dict = {}
+_INTROSPECT_TTL = 60          # 秒。令牌本身有效期一小时，缓存一分钟足够削掉绝大部分往返
 
-    旧项目：HS256 对称签名，密钥是设置页的 JWT Secret。
-    新项目：Supabase 2025 年起改用非对称签名密钥（ES256/RS256），
-            公钥挂在 <project>/auth/v1/.well-known/jwks.json，
-            设置页可能根本没有 "JWT Secret" 那一项。
 
-    只支持 HS256 的话，新建的 Supabase 项目部署完会所有请求 401，
-    而报错信息是「令牌无效」，看不出真正原因是算法不匹配。
-    所以两条路都留：配了 SUPABASE_JWT_SECRET 走对称，
-    配了 SUPABASE_URL 走 JWKS。
+def _verify_via_supabase(token: str) -> dict:
+    """把令牌交给 Supabase 自己去验：GET /auth/v1/user。
+
+    为什么用这条路而不是本地验签：Supabase 的签名方式有两代（HS256 对称 /
+    ES256 非对称），而**两代都拿不到可用的公开验签材料**——
+      · 新版取公钥的端点实测返回 "Secret API key required"，
+        为了拿一个公钥反而得存一个高权限的 secret key，本末倒置；
+      · 旧版的 HS256 密钥在新项目里可能根本不存在。
+    本地验签因此需要先搞清楚项目是哪一代、再配对应的密钥，配错的表现
+    是所有请求 401 而报错看不出原因。
+
+    交给 Supabase 验则跟签名方式完全无关：令牌有效它返回用户，无效返回 401。
+    只需要 publishable key（公开值）。代价是一次网络往返，用缓存削掉——
+    同一个令牌在 TTL 内只问一次。
+
+    权衡说明：这样撤销令牌最多延迟 TTL 秒才生效。对单用户的自用系统，
+    60 秒完全可以接受；本地验签其实也一样有这个问题（令牌到期前无法撤销），
+    所以并没有变差。
     """
-    if JWKS_URL:
-        try:
-            signing_key = _jwk_client().get_signing_key_from_jwt(token)
-        except Exception as e:
-            raise HTTPException(401, f"取签名公钥失败: {e}")
-        key, algs = signing_key.key, ["ES256", "RS256"]
-    else:
-        key, algs = SUPABASE_JWT_SECRET, ["HS256"]
+    now = time.time()
+    hit = _introspect_cache.get(token)
+    if hit and hit[0] > now:
+        return hit[1]
 
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}"},
+            timeout=8,
+        )
+    except requests.RequestException as e:
+        # 网络抖动不该表现成「登录失效」把用户踢回登录页，用 503 区分开
+        raise HTTPException(503, f"无法连接认证服务: {e}")
+
+    if r.status_code == 401:
+        raise HTTPException(401, "令牌无效或已过期，请重新登录")
+    if r.status_code != 200:
+        raise HTTPException(401, f"认证服务返回 {r.status_code}: {r.text[:120]}")
+
+    user = r.json()
+    claims = {"sub": user.get("id"), "email": user.get("email"), "raw": user}
+
+    # 缓存别无限长大：单用户场景本来就没几个令牌，但刷新会不断产生新的
+    if len(_introspect_cache) > 64:
+        _introspect_cache.clear()
+    _introspect_cache[token] = (now + _INTROSPECT_TTL, claims)
+    return claims
+
+
+def _decode(token: str) -> dict:
+    """校验令牌，返回 claims。两条路，见下面的注释。"""
+    # 配了 HS256 密钥就本地验签——没有网络往返，最快。
+    # 没配就交给 Supabase 验（见 _verify_via_supabase 里为什么不走 JWKS）。
+    if not SUPABASE_JWT_SECRET:
+        return _verify_via_supabase(token)
+
+    key, algs = SUPABASE_JWT_SECRET, ["HS256"]
     try:
         return jwt.decode(token, key, algorithms=algs, audience=SUPABASE_JWT_AUDIENCE)
     except jwt.ExpiredSignatureError:
