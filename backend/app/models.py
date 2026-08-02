@@ -126,9 +126,18 @@ class Prediction(Base):
 
 
 class Odds(Base):
+    """手输赔率的记录，用来预填「预测」页的赔率表单和算 EV。
+
+    加 owner_id 是因为这份数据本质上是"你自己看到的报价"——BK8 之类
+    平台不同账号、不同时间点报价可能不一样，而且它会原样预填进表单，
+    没有隔离的话账号 A 填过的赔率会在账号 B 打开同一场比赛时冒出来，
+    虽然不是钱，但也是账号之间不该互相看到的个人输入内容。
+    跟 Bet/RealBet/ParlayBet/Withdrawal 用同一套隔离机制。
+    """
     __tablename__ = "odds"
     id = Column(Integer, primary_key=True)
     match_id = Column(Integer, ForeignKey("matches.id"))
+    owner_id = Column(String, nullable=True, index=True)
     source = Column(String, default="manual")
     odds_home = Column(Float)
     odds_draw = Column(Float, nullable=True)
@@ -366,6 +375,7 @@ _SCHEMA_PATCHES = [
     ("real_bets", "owner_id", "VARCHAR"),
     ("parlay_bets", "owner_id", "VARCHAR"),
     ("withdrawals", "owner_id", "VARCHAR"),
+    ("odds", "owner_id", "VARCHAR"),
 ]
 
 

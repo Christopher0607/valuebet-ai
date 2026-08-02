@@ -311,7 +311,8 @@ def list_competitions(db: Session = Depends(get_db)):
 # ══════════════════════════════════════════════════════════
 
 @app.get("/api/matches")
-def list_matches(status_filter: Optional[str] = None, competition_id: Optional[int] = None, db: Session = Depends(get_db)):
+def list_matches(status_filter: Optional[str] = None, competition_id: Optional[int] = None,
+                 db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     q = db.query(Match)
     if status_filter:
         q = q.filter(Match.status == status_filter)
@@ -344,9 +345,10 @@ def list_matches(status_filter: Optional[str] = None, competition_id: Optional[i
         for p in db.query(Prediction).filter(Prediction.match_id.in_(chunk)).all():
             preds[p.match_id] = p
         # 按 (match_id, recorded_at 倒序) 排好，每场第一条就是最新的那条赔率，
-        # setdefault 只保留第一条
-        for o in (db.query(Odds).filter(Odds.match_id.in_(chunk))
-                    .order_by(Odds.match_id, desc(Odds.recorded_at)).all()):
+        # setdefault 只保留第一条。按账号过滤——这是"你自己填过的赔率"，
+        # 不应该预填出别的账号看到的报价。
+        odds_q = _owned(db.query(Odds), Odds, _owner_key(user)).filter(Odds.match_id.in_(chunk))
+        for o in odds_q.order_by(Odds.match_id, desc(Odds.recorded_at)).all():
             latest_odds_by_match.setdefault(o.match_id, o)
 
     out = []
@@ -396,7 +398,7 @@ def submit_odds(payload: OddsInput, db: Session = Depends(get_db), user: Optiona
         raise HTTPException(404, "Match not found")
 
     db.add(Odds(
-        match_id=payload.match_id, source="manual",
+        match_id=payload.match_id, source="manual", owner_id=_owner_key(user),
         odds_home=payload.odds_home, odds_draw=payload.odds_draw, odds_away=payload.odds_away,
     ))
     db.commit()
