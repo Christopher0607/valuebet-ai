@@ -22,7 +22,7 @@ from .models import (
 )
 from .updater import run_full_update
 from .scheduler import start_scheduler, next_run_info
-from .auth import AUTH_ENABLED, current_user, require_auth_configured
+from .auth import AUTH_ENABLED, current_user, require_auth_configured, AuthDep
 from .model import expected_value, kelly_pct, BayesianTeamState, parlay_ev_and_risk, suggest_parlays
 from .ev_evidence import (
     bet_advisory, parlay_advisory, price_capture, reality_check,
@@ -143,14 +143,74 @@ def _seed_default_competition():
 
 
 def _seed_default_settings():
+    """本地模式（没有登录）预先建好那一份设置，跟以前的行为一样——
+    双击就能用，不需要等第一次接口调用才懒创建。云端各账号的设置行
+    由 _get_or_create_settings() 在第一次用到时按需建，没法在启动时
+    枚举有哪些账号。"""
     from .models import SessionLocal
     db = SessionLocal()
     try:
-        if not db.query(UserSettings).filter_by(setting_key="default").first():
-            db.add(UserSettings(setting_key="default"))
+        if not db.query(UserSettings).filter_by(setting_key=_LOCAL_OWNER).first():
+            db.add(UserSettings(setting_key=_LOCAL_OWNER))
             db.commit()
     finally:
         db.close()
+
+
+# ══════════════════════════════════════════════════════════
+# 账号数据隔离
+# ══════════════════════════════════════════════════════════
+#
+# 起因：Bet / RealBet / ParlayBet / UserSettings / Withdrawal 这几张表
+# 一开始完全没有"属于谁"的概念——所有登录账号查的是同一份注单、同一条
+# 资金曲线、同一份凯利设置。本地单人用没问题，一旦云端开了多账号登录，
+# 表现就是账号 A 能看到、甚至能取消账号 B 的下注，"实盘"页显示的是
+# 所有人的钱混在一起。这一段就是补上这个隔离。
+
+_LOCAL_OWNER = "local"          # 本地未登录模式的固定归属键，行为跟以前完全一样
+
+
+def _owner_key(user: Optional[dict]) -> str:
+    """账号数据隔离键。云端用 Supabase 的 user id；本地没有登录概念，
+    固定用 "local"。"""
+    return user["id"] if user else _LOCAL_OWNER
+
+
+def _owned(query, model, owner: str):
+    """给查询加上"这行属于当前账号"的过滤条件。
+
+    本地模式（AUTH_ENABLED 为假）额外放行 owner_id 为空的历史行——
+    这套隔离是这次才加上的，之前所有本地数据都没有 owner_id，不放行的话
+    单人本地用户会觉得自己的历史记录一夜之间全部消失了。
+
+    云端模式没有这个例外：owner_id 为空的行只可能是账号隔离上线前、
+    测试阶段留下的数据，归属不明，直接当不可见处理——这比瞎猜它属于
+    哪个账号、或者让所有账号都看得到要安全。
+    """
+    if not AUTH_ENABLED:
+        return query.filter((model.owner_id == owner) | (model.owner_id.is_(None)))
+    return query.filter(model.owner_id == owner)
+
+
+def _is_owned(row, owner: str) -> bool:
+    """单行版本的 _owned()，用在取消/删除接口的权限检查上。"""
+    if row.owner_id == owner:
+        return True
+    return not AUTH_ENABLED and row.owner_id is None
+
+
+def _get_or_create_settings(db: Session, owner: str) -> UserSettings:
+    """按账号取设置（资金总额、凯利比例……），没有就建一份默认的。
+
+    云端账号是运行时才登录进来的，没法像本地那样在启动时预先建好，
+    只能在第一次用到的时候懒创建。"""
+    s = db.query(UserSettings).filter_by(setting_key=owner).first()
+    if not s:
+        s = UserSettings(setting_key=owner)
+        db.add(s)
+        db.commit()
+        db.refresh(s)
+    return s
 
 
 # ══════════════════════════════════════════════════════════
@@ -330,7 +390,7 @@ class OddsInput(BaseModel):
 
 
 @app.post("/api/odds")
-def submit_odds(payload: OddsInput, db: Session = Depends(get_db)):
+def submit_odds(payload: OddsInput, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     match = db.query(Match).filter_by(id=payload.match_id).first()
     if not match:
         raise HTTPException(404, "Match not found")
@@ -345,7 +405,7 @@ def submit_odds(payload: OddsInput, db: Session = Depends(get_db)):
     if not pred:
         raise HTTPException(400, "No prediction available for this match yet")
 
-    settings = db.query(UserSettings).filter_by(setting_key="default").first()
+    settings = _get_or_create_settings(db, _owner_key(user))
     frac, cap = settings.kelly_fraction, settings.max_bet_pct
 
     ev_home = expected_value(pred.prob_home, payload.odds_home)
@@ -382,8 +442,8 @@ class BetInput(BaseModel):
 
 
 @app.get("/api/bets")
-def list_bets(db: Session = Depends(get_db)):
-    bets = db.query(Bet).order_by(desc(Bet.created_at)).all()
+def list_bets(db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
+    bets = _owned(db.query(Bet), Bet, _owner_key(user)).order_by(desc(Bet.created_at)).all()
     return [_bet_dict(b) for b in bets]
 
 
@@ -403,8 +463,8 @@ def _bet_dict(b: Bet):
 
 
 @app.post("/api/bets")
-def create_bet(payload: BetInput, db: Session = Depends(get_db)):
-    bet = Bet(**payload.dict(), result="pending")
+def create_bet(payload: BetInput, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
+    bet = Bet(**payload.dict(), result="pending", owner_id=_owner_key(user))
     db.add(bet)
     db.commit()
     db.refresh(bet)
@@ -412,7 +472,7 @@ def create_bet(payload: BetInput, db: Session = Depends(get_db)):
 
 
 @app.delete("/api/bets/{bet_id}")
-def cancel_bet(bet_id: int, db: Session = Depends(get_db)):
+def cancel_bet(bet_id: int, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     """取消一笔还没结算的虚拟下注——手滑点错、或者想换个方向重下。
 
     只允许取消 pending 的。已经结算过的不能删：那条记录已经算进了
@@ -420,7 +480,9 @@ def cancel_bet(bet_id: int, db: Session = Depends(get_db)):
     跟"取消一笔还没发生的事"完全是两回事。
     """
     bet = db.query(Bet).filter_by(id=bet_id).first()
-    if not bet:
+    if not bet or not _is_owned(bet, _owner_key(user)):
+        # 不属于自己的注单一律当"不存在"，不要用 403——403 等于告诉对方
+        # "这个 id 是存在的，只是不是你的"，一样会泄露别人的下注量。
         raise HTTPException(404, "下注记录不存在")
     if bet.result != "pending":
         raise HTTPException(400, "已结算的下注不能取消，那会悄悄改掉历史战绩和资金曲线")
@@ -450,8 +512,8 @@ class RealBetInput(BaseModel):
 
 
 @app.get("/api/real-bets")
-def list_real_bets(db: Session = Depends(get_db)):
-    bets = db.query(RealBet).order_by(desc(RealBet.placed_at)).all()
+def list_real_bets(db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
+    bets = _owned(db.query(RealBet), RealBet, _owner_key(user)).order_by(desc(RealBet.placed_at)).all()
     return [_real_bet_dict(b) for b in bets]
 
 
@@ -477,7 +539,7 @@ def _real_bet_dict(b: RealBet):
 
 
 @app.post("/api/real-bets")
-def create_real_bet(payload: RealBetInput, db: Session = Depends(get_db)):
+def create_real_bet(payload: RealBetInput, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     data = payload.dict()
 
     # 前端没传赛事就从比赛回填，把值真的写进库里，而不是只在读的时候兜底。
@@ -492,7 +554,7 @@ def create_real_bet(payload: RealBetInput, db: Session = Depends(get_db)):
     followed = None
     if kelly_amt:
         followed = abs(data["stake_real"] - kelly_amt) < kelly_amt * 0.15
-    bet = RealBet(**data, actually_followed_kelly=followed, result="pending")
+    bet = RealBet(**data, actually_followed_kelly=followed, result="pending", owner_id=_owner_key(user))
     db.add(bet)
     db.commit()
     db.refresh(bet)
@@ -500,7 +562,7 @@ def create_real_bet(payload: RealBetInput, db: Session = Depends(get_db)):
 
 
 @app.delete("/api/real-bets/{bet_id}")
-def cancel_real_bet(bet_id: int, db: Session = Depends(get_db)):
+def cancel_real_bet(bet_id: int, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     """取消一笔还没结算的实盘登记。
 
     只是撤销这里的记录，不碰你在 BK8 等平台上的真实注单——如果那边的注
@@ -509,7 +571,7 @@ def cancel_real_bet(bet_id: int, db: Session = Depends(get_db)):
     改写历史战绩和资金曲线。
     """
     bet = db.query(RealBet).filter_by(id=bet_id).first()
-    if not bet:
+    if not bet or not _is_owned(bet, _owner_key(user)):
         raise HTTPException(404, "实盘记录不存在")
     if bet.result != "pending":
         raise HTTPException(400, "已结算的下注不能取消，那会悄悄改掉历史战绩和资金曲线")
@@ -530,8 +592,8 @@ class SettingsInput(BaseModel):
 
 
 @app.get("/api/settings")
-def get_settings(db: Session = Depends(get_db)):
-    s = db.query(UserSettings).filter_by(setting_key="default").first()
+def get_settings(db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
+    s = _get_or_create_settings(db, _owner_key(user))
     return {
         "bankroll_total": s.bankroll_total, "kelly_fraction": s.kelly_fraction,
         "max_bet_pct": s.max_bet_pct, "min_ev_threshold": s.min_ev_threshold,
@@ -539,8 +601,8 @@ def get_settings(db: Session = Depends(get_db)):
 
 
 @app.put("/api/settings")
-def update_settings(payload: SettingsInput, db: Session = Depends(get_db)):
-    s = db.query(UserSettings).filter_by(setting_key="default").first()
+def update_settings(payload: SettingsInput, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
+    s = _get_or_create_settings(db, _owner_key(user))
     for k, v in payload.dict().items():
         setattr(s, k, v)
     db.commit()
@@ -552,7 +614,7 @@ def update_settings(payload: SettingsInput, db: Session = Depends(get_db)):
 # ══════════════════════════════════════════════════════════
 
 @app.get("/api/bankroll-summary")
-def bankroll_summary(db: Session = Depends(get_db)):
+def bankroll_summary(db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     """
     资金走势 + 汇总。资金池是全局共用的（所有赛事共享一个 bankroll_total），
     盈亏统计按虚拟盘/实盘分开，但不按赛事分开——赛事维度的统计在
@@ -564,13 +626,14 @@ def bankroll_summary(db: Session = Depends(get_db)):
     把已经赢到的钱转出去，不是一笔新的输赢，混进盈亏统计里会把 ROI
     算得莫名其妙地低。只作用于实盘，虚拟盘没有提款这回事。
     """
-    settings = db.query(UserSettings).filter_by(setting_key="default").first()
+    owner = _owner_key(user)
+    settings = _get_or_create_settings(db, owner)
     base = settings.bankroll_total
 
-    v_bets = db.query(Bet).filter(Bet.result != "pending").all()
-    r_bets = db.query(RealBet).filter(RealBet.result != "pending").all()
-    parlays = db.query(ParlayBet).filter(ParlayBet.result != "pending").all()
-    withdrawals = db.query(Withdrawal).all()
+    v_bets = _owned(db.query(Bet), Bet, owner).filter(Bet.result != "pending").all()
+    r_bets = _owned(db.query(RealBet), RealBet, owner).filter(RealBet.result != "pending").all()
+    parlays = _owned(db.query(ParlayBet), ParlayBet, owner).filter(ParlayBet.result != "pending").all()
+    withdrawals = _owned(db.query(Withdrawal), Withdrawal, owner).all()
 
     # 把所有已结算的资金事件收敛成 (日期, 盈亏, 虚拟还是实盘) 三元组。
     # 提款用同样的形状塞进去（金额取负、kind 固定 "real"）——merge 循环
@@ -663,16 +726,16 @@ def _withdrawal_dict(w: Withdrawal):
 
 
 @app.get("/api/withdrawals")
-def list_withdrawals(db: Session = Depends(get_db)):
-    rows = db.query(Withdrawal).order_by(desc(Withdrawal.withdrawn_at)).all()
+def list_withdrawals(db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
+    rows = _owned(db.query(Withdrawal), Withdrawal, _owner_key(user)).order_by(desc(Withdrawal.withdrawn_at)).all()
     return [_withdrawal_dict(w) for w in rows]
 
 
 @app.post("/api/withdrawals")
-def create_withdrawal(payload: WithdrawalInput, db: Session = Depends(get_db)):
+def create_withdrawal(payload: WithdrawalInput, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     if payload.amount <= 0:
         raise HTTPException(400, "提款金额必须大于 0")
-    w = Withdrawal(amount=payload.amount, currency=payload.currency, note=payload.note)
+    w = Withdrawal(amount=payload.amount, currency=payload.currency, note=payload.note, owner_id=_owner_key(user))
     db.add(w)
     db.commit()
     db.refresh(w)
@@ -680,14 +743,14 @@ def create_withdrawal(payload: WithdrawalInput, db: Session = Depends(get_db)):
 
 
 @app.delete("/api/withdrawals/{withdrawal_id}")
-def delete_withdrawal(withdrawal_id: int, db: Session = Depends(get_db)):
+def delete_withdrawal(withdrawal_id: int, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     """撤销一笔提款记录——纯粹是记错了、手滑多按一次这类账目层面的更正。
 
     没有 pending 概念（提款不像下注那样会"结算"），所以不需要跟
     cancel_bet 一样的状态检查，只要这行还在就能删。
     """
     w = db.query(Withdrawal).filter_by(id=withdrawal_id).first()
-    if not w:
+    if not w or not _is_owned(w, _owner_key(user)):
         raise HTTPException(404, "提款记录不存在")
     db.delete(w)
     db.commit()
@@ -804,7 +867,7 @@ class ParlayInput(BaseModel):
 
 
 @app.post("/api/parlay")
-def calculate_parlay(payload: ParlayInput, db: Session = Depends(get_db)):
+def calculate_parlay(payload: ParlayInput, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     """
     Computes joint probability, EV, and Kelly stake for a parlay across
     matches the caller asserts are independent (e.g. Spain vs Italy, and
@@ -827,7 +890,7 @@ def calculate_parlay(payload: ParlayInput, db: Session = Depends(get_db)):
             "endpoint's joint distribution instead."
         )
 
-    settings = db.query(UserSettings).filter_by(setting_key="default").first()
+    settings = _get_or_create_settings(db, _owner_key(user))
     legs_for_calc = []
     for leg in payload.legs:
         pred = db.query(Prediction).filter_by(match_id=leg.match_id).first()
@@ -858,7 +921,7 @@ class ParlaySuggestInput(BaseModel):
 
 
 @app.post("/api/parlay/suggest")
-def suggest_parlay_combinations(payload: ParlaySuggestInput, db: Session = Depends(get_db)):
+def suggest_parlay_combinations(payload: ParlaySuggestInput, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     """
     Auto-search entry point: give it a pool of matches with your odds
     (only 1X2 — home/draw/away, no other markets), it looks up this
@@ -884,7 +947,7 @@ def suggest_parlay_combinations(payload: ParlaySuggestInput, db: Session = Depen
     if payload.max_legs > 8:
         raise HTTPException(400, "max_legs capped at 8 to keep the combination search fast")
 
-    settings = db.query(UserSettings).filter_by(setting_key="default").first()
+    settings = _get_or_create_settings(db, _owner_key(user))
 
     match_odds_list = []
     for m in payload.matches:
@@ -935,7 +998,7 @@ class ParlayBetRecord(BaseModel):
 
 
 @app.post("/api/parlay-bets")
-def create_parlay_bet(payload: ParlayBetRecord, db: Session = Depends(get_db)):
+def create_parlay_bet(payload: ParlayBetRecord, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     """
     把一注串关记进账。虚拟盘和实盘用 kind 区分，两者都会进入资金曲线
     （资金池全局共用，不按赛事分开）。
@@ -963,6 +1026,7 @@ def create_parlay_bet(payload: ParlayBetRecord, db: Session = Depends(get_db)):
             odds_used *= l.odds
 
     parlay = ParlayBet(
+        owner_id=_owner_key(user),
         kind=payload.kind, stake=payload.stake, odds_used=round(odds_used, 4),
         joint_probability=payload.joint_probability, ev_at_bet=payload.ev_at_bet,
         kelly_pct=payload.kelly_pct, platform=payload.platform,
@@ -1001,15 +1065,15 @@ def _parlay_dict(p: ParlayBet):
 
 
 @app.get("/api/parlay-bets")
-def list_parlay_bets(kind: Optional[str] = None, db: Session = Depends(get_db)):
-    q = db.query(ParlayBet)
+def list_parlay_bets(kind: Optional[str] = None, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
+    q = _owned(db.query(ParlayBet), ParlayBet, _owner_key(user))
     if kind:
         q = q.filter(ParlayBet.kind == kind)
     return [_parlay_dict(p) for p in q.order_by(ParlayBet.created_at.desc()).all()]
 
 
 @app.delete("/api/parlay-bets/{parlay_id}")
-def delete_parlay_bet(parlay_id: int, db: Session = Depends(get_db)):
+def delete_parlay_bet(parlay_id: int, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
     """取消一注还没结算的串关。
 
     这里原来没有 pending 检查——能把已经赢了/输了的串关也删掉，
@@ -1019,7 +1083,7 @@ def delete_parlay_bet(parlay_id: int, db: Session = Depends(get_db)):
     cancel_real_bet 一致的限制：只能取消还没结算的。
     """
     p = db.query(ParlayBet).filter_by(id=parlay_id).first()
-    if not p:
+    if not p or not _is_owned(p, _owner_key(user)):
         raise HTTPException(404, "串关注单不存在")
     if p.result != "pending":
         raise HTTPException(400, "已结算的串关不能取消，那会悄悄改掉历史战绩和资金曲线")
