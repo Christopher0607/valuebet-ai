@@ -18,6 +18,7 @@ import os
 from .models import (
     init_db, get_db, Match, Prediction, Odds, Bet, RealBet, UserSettings,
     Competition, UpdateLog, BayesianTeamStateRow, ParlayBet, ParlayLeg, PriceLog,
+    Withdrawal,
 )
 from .updater import run_full_update
 from .scheduler import start_scheduler, next_run_info
@@ -410,6 +411,24 @@ def create_bet(payload: BetInput, db: Session = Depends(get_db)):
     return _bet_dict(bet)
 
 
+@app.delete("/api/bets/{bet_id}")
+def cancel_bet(bet_id: int, db: Session = Depends(get_db)):
+    """取消一笔还没结算的虚拟下注——手滑点错、或者想换个方向重下。
+
+    只允许取消 pending 的。已经结算过的不能删：那条记录已经算进了
+    /api/bankroll-summary 的资金曲线和胜率统计，删掉等于悄悄改写历史战绩，
+    跟"取消一笔还没发生的事"完全是两回事。
+    """
+    bet = db.query(Bet).filter_by(id=bet_id).first()
+    if not bet:
+        raise HTTPException(404, "下注记录不存在")
+    if bet.result != "pending":
+        raise HTTPException(400, "已结算的下注不能取消，那会悄悄改掉历史战绩和资金曲线")
+    db.delete(bet)
+    db.commit()
+    return {"status": "cancelled", "id": bet_id}
+
+
 # ══════════════════════════════════════════════════════════
 # REAL (LIVE-MONEY) BETS — manually entered after you place them
 # ══════════════════════════════════════════════════════════
@@ -480,6 +499,25 @@ def create_real_bet(payload: RealBetInput, db: Session = Depends(get_db)):
     return _real_bet_dict(bet)
 
 
+@app.delete("/api/real-bets/{bet_id}")
+def cancel_real_bet(bet_id: int, db: Session = Depends(get_db)):
+    """取消一笔还没结算的实盘登记。
+
+    只是撤销这里的记录，不碰你在 BK8 等平台上的真实注单——如果那边的注
+    还在，去那边自己也要取消/让它照常结算，这里只是同步你自己的记账。
+    只允许取消 pending 的，理由跟 cancel_bet 一样：已结算的删了会悄悄
+    改写历史战绩和资金曲线。
+    """
+    bet = db.query(RealBet).filter_by(id=bet_id).first()
+    if not bet:
+        raise HTTPException(404, "实盘记录不存在")
+    if bet.result != "pending":
+        raise HTTPException(400, "已结算的下注不能取消，那会悄悄改掉历史战绩和资金曲线")
+    db.delete(bet)
+    db.commit()
+    return {"status": "cancelled", "id": bet_id}
+
+
 # ══════════════════════════════════════════════════════════
 # SETTINGS (custom bankroll / Kelly fraction / caps)
 # ══════════════════════════════════════════════════════════
@@ -521,6 +559,10 @@ def bankroll_summary(db: Session = Depends(get_db)):
     /api/backtest-summary，那个是模型预测准确率，跟资金流向是两回事。
 
     串关盈亏计入对应的虚拟/实盘曲线（一注串关算一个资金事件）。
+
+    提款只影响资金曲线，不影响「盈亏」「ROI」「胜率」这些统计——提款是
+    把已经赢到的钱转出去，不是一笔新的输赢，混进盈亏统计里会把 ROI
+    算得莫名其妙地低。只作用于实盘，虚拟盘没有提款这回事。
     """
     settings = db.query(UserSettings).filter_by(setting_key="default").first()
     base = settings.bankroll_total
@@ -528,8 +570,11 @@ def bankroll_summary(db: Session = Depends(get_db)):
     v_bets = db.query(Bet).filter(Bet.result != "pending").all()
     r_bets = db.query(RealBet).filter(RealBet.result != "pending").all()
     parlays = db.query(ParlayBet).filter(ParlayBet.result != "pending").all()
+    withdrawals = db.query(Withdrawal).all()
 
-    # 把所有已结算的资金事件收敛成 (日期, 盈亏, 虚拟还是实盘) 三元组
+    # 把所有已结算的资金事件收敛成 (日期, 盈亏, 虚拟还是实盘) 三元组。
+    # 提款用同样的形状塞进去（金额取负、kind 固定 "real"）——merge 循环
+    # 不需要为它单独分支，跟处理一笔亏损的注单没有任何区别。
     events = []
     for b in v_bets:
         events.append((b.created_at.date(), b.pnl or 0, "virtual"))
@@ -537,6 +582,8 @@ def bankroll_summary(db: Session = Depends(get_db)):
         events.append((b.placed_at.date(), b.pnl_real or 0, "real"))
     for p in parlays:
         events.append((p.created_at.date(), p.pnl or 0, "virtual" if p.kind == "virtual" else "real"))
+    for w in withdrawals:
+        events.append((w.withdrawn_at.date(), -w.amount, "real"))
 
     events.sort(key=lambda e: e[0])
 
@@ -568,6 +615,7 @@ def bankroll_summary(db: Session = Depends(get_db)):
 
     v_wins = sum(1 for b in v_bets if b.result == "win") + sum(1 for p in parlays if p.kind == "virtual" and p.result == "win")
     r_wins = sum(1 for b in r_bets if b.result == "win") + sum(1 for p in parlays if p.kind == "real" and p.result == "win")
+    total_withdrawn = sum(w.amount for w in withdrawals)
 
     return {
         "bankroll_base": base,
@@ -583,8 +631,67 @@ def bankroll_summary(db: Session = Depends(get_db)):
             "roi_pct": round(r_pnl / r_staked * 100, 2) if r_staked else 0,
             "total_bets": len(r_bets) + sum(1 for p in parlays if p.kind == "real"),
             "wins": r_wins,
+            "total_withdrawn": round(total_withdrawn, 2),
+            # 当前可提取余额：起始资金 + 已结算实盘盈亏 - 已提款。
+            # 不扣待结算注单的本金——这跟资金曲线其余部分的口径一致，
+            # 待结算的钱在这个系统里从来就不算「已经花出去」。
+            "current_balance": round(base + r_pnl - total_withdrawn, 2),
         },
     }
+
+
+# ══════════════════════════════════════════════════════════
+# WITHDRAWALS — 实盘资金提出的记账
+# ══════════════════════════════════════════════════════════
+#
+# 跟这个系统的其他"实盘"功能一样：这里只记账，不碰真钱。用户自己在
+# BK8 之类的平台把钱转出去之后，回来这里登记一笔，好让追踪的资金曲线
+# 跟真实情况对得上。见 硬性约束 "不做自动下注" ——这条同样适用：
+# 这里不会、也不能替你去平台上发起真实的提现操作。
+
+class WithdrawalInput(BaseModel):
+    amount: float
+    currency: str = "HKD"
+    note: Optional[str] = None
+
+
+def _withdrawal_dict(w: Withdrawal):
+    return {
+        "id": w.id, "amount": w.amount, "currency": w.currency, "note": w.note,
+        "withdrawn_at": w.withdrawn_at.isoformat(),
+    }
+
+
+@app.get("/api/withdrawals")
+def list_withdrawals(db: Session = Depends(get_db)):
+    rows = db.query(Withdrawal).order_by(desc(Withdrawal.withdrawn_at)).all()
+    return [_withdrawal_dict(w) for w in rows]
+
+
+@app.post("/api/withdrawals")
+def create_withdrawal(payload: WithdrawalInput, db: Session = Depends(get_db)):
+    if payload.amount <= 0:
+        raise HTTPException(400, "提款金额必须大于 0")
+    w = Withdrawal(amount=payload.amount, currency=payload.currency, note=payload.note)
+    db.add(w)
+    db.commit()
+    db.refresh(w)
+    return _withdrawal_dict(w)
+
+
+@app.delete("/api/withdrawals/{withdrawal_id}")
+def delete_withdrawal(withdrawal_id: int, db: Session = Depends(get_db)):
+    """撤销一笔提款记录——纯粹是记错了、手滑多按一次这类账目层面的更正。
+
+    没有 pending 概念（提款不像下注那样会"结算"），所以不需要跟
+    cancel_bet 一样的状态检查，只要这行还在就能删。
+    """
+    w = db.query(Withdrawal).filter_by(id=withdrawal_id).first()
+    if not w:
+        raise HTTPException(404, "提款记录不存在")
+    db.delete(w)
+    db.commit()
+    return {"status": "deleted", "id": withdrawal_id}
 
 
 # ══════════════════════════════════════════════════════════
@@ -903,12 +1010,22 @@ def list_parlay_bets(kind: Optional[str] = None, db: Session = Depends(get_db)):
 
 @app.delete("/api/parlay-bets/{parlay_id}")
 def delete_parlay_bet(parlay_id: int, db: Session = Depends(get_db)):
+    """取消一注还没结算的串关。
+
+    这里原来没有 pending 检查——能把已经赢了/输了的串关也删掉，
+    那样 /api/bankroll-summary 里已经算进资金曲线和胜率的一笔账会凭空
+    消失，历史战绩被悄悄改写而界面上完全看不出发生过什么。删除操作本身
+    没留任何痕迹，事后没法查是谁、什么时候删的。加上跟 cancel_bet /
+    cancel_real_bet 一致的限制：只能取消还没结算的。
+    """
     p = db.query(ParlayBet).filter_by(id=parlay_id).first()
     if not p:
         raise HTTPException(404, "串关注单不存在")
+    if p.result != "pending":
+        raise HTTPException(400, "已结算的串关不能取消，那会悄悄改掉历史战绩和资金曲线")
     db.delete(p)
     db.commit()
-    return {"status": "deleted", "id": parlay_id}
+    return {"status": "cancelled", "id": parlay_id}
 
 
 @app.get("/api/score-distribution/{match_id}")

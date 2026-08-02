@@ -237,6 +237,27 @@ class UserSettings(Base):
     min_ev_threshold = Column(Float, default=0.03)
 
 
+class Withdrawal(Base):
+    """
+    实盘资金的提款记录——赢了钱从 BK8 等平台转去自己银行账户后，
+    在这里登记一笔，让「实盘」这条资金曲线跟真实情况对得上。
+
+    只作用于实盘，没有虚拟盘版本：虚拟盘是纯粹用来测试模型的假钱，
+    不存在"从假账户提现"这回事。
+
+    金额恒为正数（代表提出多少），跟 bankroll_summary 里结算事件的处理
+    方式一样：提款记一个带日期的事件，只从发生的那天起影响资金曲线——
+    不能直接去改 UserSettings.bankroll_total，那样会把提款之前的历史
+    也一起下移，等于篡改了过去已经发生的事。
+    """
+    __tablename__ = "withdrawals"
+    id = Column(Integer, primary_key=True)
+    amount = Column(Float, nullable=False)
+    currency = Column(String, default="HKD")
+    note = Column(String, nullable=True)
+    withdrawn_at = Column(DateTime, default=datetime.utcnow)
+
+
 class BayesianTeamStateRow(Base):
     """
     Persists BayesianTeamState (see model.py) across backend restarts.
