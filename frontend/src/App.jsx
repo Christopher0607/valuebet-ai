@@ -72,6 +72,7 @@ const evbg = v => v > 0.04 ? C.accentDim : v > 0 ? C.goldDim : C.redDim;
 // 按用户隔离：云端换账号登录时，绝不能读到上一个账号的实盘记录。
 // 退出登录时直接清掉。
 const CACHE_KEY = "vb_cache_v2";
+const DISCLAIMER_SEEN_KEY = "vb_disclaimer_seen_v1";
 
 function readCache(userKey) {
   try {
@@ -107,6 +108,7 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);   // 用缓存先画出来、后台正在刷新
   const [refreshFailed, setRefreshFailed] = useState(false);
   const [showSett, setShowSett] = useState(false);
+  const [showDisclaimer, setShowDisclaimer] = useState(false);
   const [loading, setLoading]   = useState(true);
   const [apiError, setApiError] = useState(null);
   const [updating, setUpdating] = useState(false);
@@ -265,6 +267,15 @@ export default function App() {
 
     return () => { cancelled = true; clearInterval(interval); };
   }, [status, loadAll]);
+
+  // 免责声明只自动弹一次——本地存个标记，下次进来不会一直弹。
+  // 顶部一直留着「⚠️ 免责声明」的入口，想再看随时点得到，
+  // 不需要靠自动弹窗才能找到它。
+  useEffect(() => {
+    try {
+      if (!localStorage.getItem(DISCLAIMER_SEEN_KEY)) setShowDisclaimer(true);
+    } catch { /* localStorage 不可用（隐私模式等）就不自动弹，不影响使用 */ }
+  }, []);
 
   async function triggerUpdate() {
     setUpdating(true);
@@ -481,6 +492,12 @@ export default function App() {
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             <button
+              onClick={() => setShowDisclaimer(true)}
+              style={{ padding: "6px 12px", borderRadius: 7, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11, fontWeight: 700 }}
+            >
+              ⚠️ 免责声明
+            </button>
+            <button
               onClick={() => setShowSett(s => !s)}
               style={{ padding: "6px 12px", borderRadius: 7, border: `1px solid ${showSett ? C.purple : C.border}`, background: showSett ? C.purpleDim : "transparent", color: showSett ? C.purple : C.textDim, fontSize: 11, fontWeight: 700 }}
             >
@@ -537,6 +554,13 @@ export default function App() {
 
       {showSett && settings && (
         <SettingsPanel settings={settings} onSave={saveSettings} onClose={() => setShowSett(false)} />
+      )}
+
+      {showDisclaimer && (
+        <DisclaimerModal onClose={() => {
+          try { localStorage.setItem(DISCLAIMER_SEEN_KEY, "1"); } catch {}
+          setShowDisclaimer(false);
+        }} />
       )}
 
       {/* Stats bar */}
@@ -879,6 +903,94 @@ function SettingsPanel({ settings, onSave, onClose }) {
         <button onClick={() => onSave(d)} style={{ marginTop: 12, padding: "8px 18px", borderRadius: 8, border: "none", background: C.purple, color: "#0a0510", fontWeight: 800, fontSize: 12 }}>
           保存设置
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ── 免责声明 ─────────────────────────────────────────────────
+// 内容参照马来西亚的博彩相关法规写，但这里只是一般性说明，不是法律意见
+// ——具体情况请咨询执业律师。文案基调跟项目其他地方一致：精算式的诚实，
+// 不回避"模型没有信息优势"这个已经用 14 万场走查证实的结论，也不含糊
+// "不做自动下注"这条硬性约束。
+function DisclaimerModal({ onClose }) {
+  const Section = ({ title, children }) => (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.text, marginBottom: 5 }}>{title}</div>
+      <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.8 }}>{children}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+         onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+           style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, maxWidth: 560, width: "100%", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+          <div style={{ fontWeight: 800, fontSize: 15 }}>⚠️ 免责声明</div>
+          <span onClick={onClose} style={{ cursor: "pointer", color: C.textDim, fontSize: 18, lineHeight: 1 }}>✕</span>
+        </div>
+
+        <div style={{ padding: "16px 20px", overflowY: "auto" }}>
+          <div style={{ fontSize: 11, color: C.gold, background: C.goldDim, border: `1px solid ${C.gold}33`, borderRadius: 8, padding: "9px 11px", marginBottom: 16, lineHeight: 1.7 }}>
+            以下为一般性说明，不构成法律意见。如需就你所在地区的博彩合法性、
+            税务或个人具体情况获得确定性结论，请咨询执业律师或相关专业人士。
+          </div>
+
+          <Section title="1. 这是什么">
+            ValueBet 精算系统是一个概率计算和个人记账工具，用来估算比赛结果的
+            模型概率、计算期望值（EV）和凯利仓位建议，并让你手动登记自己在
+            博彩平台上下的注、追踪盈亏。它不是博彩平台，不代客下单，不处理
+            任何真实资金，也不会替你登录任何博彩账户或自动下注——这是项目
+            一开始就定下的硬性规则，没有例外。
+          </Section>
+
+          <Section title="2. 预测的局限">
+            模型给出的是数学估计，不是确定的结果，不保证准确。项目自己做过
+            大规模走查（超过 14 万场比赛，覆盖 2013–2025 年），结论是这套
+            模型对市场赔率没有可利用的信息优势——市场定价已经把能拿到的
+            信息基本吃干净了。任何历史回测数字、准确率、RPS，都只描述过去，
+            不构成对未来结果的保证。依据本应用的任何数字做出的下注决定，
+            风险和后果完全由你自己承担。
+          </Section>
+
+          <Section title="3. 不构成投资或博彩建议">
+            本应用提供的所有数字（概率、EV、凯利仓位建议等）仅供参考和个人
+            研究用途，不构成投资建议、博彩建议或任何形式的专业意见。是否
+            下注、下注多少，是你自己的决定，开发者和运营者不对因此产生的
+            任何盈亏承担责任。
+          </Section>
+
+          <Section title="4. 法律合规——请自行确认">
+            马来西亚的博彩活动受《1953年赌博法令》（Betting Act 1953）、
+            《1953年common gaming houses法令》等法规约束，未经许可经营或
+            参与特定形式的博彩可能触犯法律；根据伊斯兰教法（Syariah），
+            穆斯林参与任何形式的赌博均被禁止，各州属有各自的执法条文。
+            本应用不对你使用的第三方博彩平台（包括离岸平台）在你所在
+            司法管辖区是否合法作任何保证——这是你自己需要核实和承担的事。
+            使用涉及真实资金的功能前，请确认自己已达到当地法定年龄，
+            且清楚了解相关法律风险。
+          </Section>
+
+          <Section title="5. 赌博风险提示">
+            赌博本质上是负期望的活动，存在造成财务损失的风险，长期参与也
+            可能带来成瘾问题。如果你或身边的人对博彩感到难以控制，建议
+            尽早寻求专业心理咨询或医疗帮助。
+          </Section>
+
+          <Section title="6. 责任限制">
+            在法律允许的最大范围内，本应用的开发者和运营者不对因使用本
+            应用（包括依据其预测、计算结果做出的决定）而产生的任何直接
+            或间接损失承担责任。
+          </Section>
+        </div>
+
+        <div style={{ padding: "12px 20px", borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
+          <button onClick={onClose}
+            style={{ width: "100%", padding: "11px", borderRadius: 8, border: "none", background: C.accent, color: C.bg, fontWeight: 800, fontSize: 13 }}>
+            我已阅读，知道了
+          </button>
+        </div>
       </div>
     </div>
   );
