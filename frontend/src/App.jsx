@@ -58,15 +58,21 @@ const fdatetime = iso => iso ? new Date(iso).toLocaleString("zh-HK", { month: "s
 // 在比赛开打前就被本金稀释），单场和串关一起算，提款不计入——提款是把赢到
 // 的钱转走，不是一笔新的输赢。所以筛「全部」时这里算出来的应该跟后端完全
 // 相等，有测试盯着这一条。
-function realPnlRoi(bets, parlays) {
+function settledPnlRoi(bets, parlays, stakeField, pnlField) {
   const sb = bets.filter(b => b.result !== "pending");
   const sp = parlays.filter(p => p.result !== "pending");
-  const pnl = sb.reduce((s, b) => s + (b.pnl_real || 0), 0) +
+  const pnl = sb.reduce((s, b) => s + (b[pnlField] || 0), 0) +
               sp.reduce((s, p) => s + (p.pnl || 0), 0);
-  const staked = sb.reduce((s, b) => s + (b.stake_real || 0), 0) +
+  const staked = sb.reduce((s, b) => s + (b[stakeField] || 0), 0) +
                  sp.reduce((s, p) => s + (p.stake || 0), 0);
   return { pnl, roi: staked ? (pnl / staked) * 100 : null };
 }
+const realPnlRoi = (bets, parlays) => settledPnlRoi(bets, parlays, "stake_real", "pnl_real");
+// 虚拟盘的单场注单字段名跟实盘不一样（stake/pnl，不是 stake_real/pnl_real）
+// ——Bet 和 RealBet 是两张不同的表。虚拟盘页目前还没有串关列表（虚拟串关
+// 存在，但没有 UI 展示），所以这里固定传空数组，口径先只到单场，跟这一页
+// 「总注数」等其余统计目前的范围一致。
+const virtualPnlRoi = (bets) => settledPnlRoi(bets, [], "stake", "pnl");
 
 // ── Colors ─────────────────────────────────────────────────
 const C = {
@@ -709,15 +715,21 @@ export default function App() {
           </div>
         )}
 
-        {!loading && tab === "bets" && settings && (
+        {!loading && tab === "bets" && settings && (() => {
+          // 跟实盘那边同一个 bug：总盈亏/ROI 原来读全局 bankroll.virtual，
+          // 不跟着联赛筛选走，而这块面板里其余四个数都是筛过的
+          // shownBets——筛到某个联赛时会出现同样的「一个联赛的亏损被另一个
+          // 联赛盖住」。改成用筛过的 shownBets 自己算。
+          const { pnl: vPnl, roi: vRoi } = virtualPnlRoi(shownBets);
+          return (
           <div>
             <SL>虚拟下注 · 起始 {(+settings.bankroll_total).toLocaleString()} 单位</SL>
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 12 }}>
               <Stat label="总注数" val={shownBets.length} color={C.blue} />
               <Stat label="赢注" val={shownBets.filter(b => b.result === "win").length} color={C.accent} />
               <Stat label="待结算" val={shownBets.filter(b => b.result === "pending").length} color={C.gold} />
-              <Stat label="总盈亏" val={fnum(bankroll?.virtual?.total_pnl)} color={(bankroll?.virtual?.total_pnl || 0) >= 0 ? C.accent : C.red} />
-              <Stat label="ROI" val={bankroll?.virtual ? bankroll.virtual.roi_pct.toFixed(1) + "%" : "—"} color={(bankroll?.virtual?.roi_pct || 0) >= 0 ? C.accent : C.red} />
+              <Stat label="总盈亏" val={fnum(vPnl)} color={vPnl >= 0 ? C.accent : C.red} />
+              <Stat label="ROI" val={vRoi == null ? "—" : vRoi.toFixed(1) + "%"} color={(vRoi || 0) >= 0 ? C.accent : C.red} />
               <Stat label="胜率" val={shownBets.length ? pct(shownBets.filter(b => b.result === "win").length / shownBets.length) : "—"} color={C.blue} />
               <Stat label="" val="" color={C.textDim} />
               <Stat label="" val="" color={C.textDim} />
@@ -754,7 +766,8 @@ export default function App() {
               </div>
             )}
           </div>
-        )}
+          );
+        })()}
 
         {!loading && tab === "realbets" && settings && (
           <RealBetsTab realBets={shownRealBets} bankroll={bankroll} settings={settings}
