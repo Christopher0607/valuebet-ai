@@ -485,10 +485,7 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ width: 32, height: 32, borderRadius: 8, background: `linear-gradient(135deg,${C.accent},${C.blue})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>⚽</div>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "-0.3px" }}>ValueBet 精算系统</div>
-              <div style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.7px" }}>{isAuthEnabled ? "云端版 · FastAPI + Postgres" : "本地版 · FastAPI + SQLite"}</div>
-            </div>
+            <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "-0.3px" }}>ValueBet 精算系统</div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             <button
