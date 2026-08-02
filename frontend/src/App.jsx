@@ -1053,7 +1053,7 @@ function DisclaimerModal({ onClose }) {
 // 明显卡。折叠之后收起的那些天一个卡片都不渲染，滚动长度从上千张卡
 // 变成几十行标题。
 //
-// 默认只展开最近的一天——绝大多数时候要看的就是马上要踢的那批。
+// 折叠面板默认全收起，只有用户自己点了才展开——不自动帮用户点开第一天。
 function DayGroups({ matches, renderMatch, selectedIds }) {
   const days = useMemo(() => {
     const map = new Map();
@@ -1064,14 +1064,7 @@ function DayGroups({ matches, renderMatch, selectedIds }) {
     return [...map.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
   }, [matches]);
 
-  // 用日期串当依赖，而不是 matches 本身——matches 是每次渲染新建的过滤
-  // 数组，拿它当依赖会每帧都重置，展开状态根本留不住。
-  const daysKey = days.map(d => d[0]).join("|");
-  const [openDays, setOpenDays] = useState(() => new Set(days.length ? [days[0][0]] : []));
-  useEffect(() => {
-    // 换了赛事筛选 → 天数变了 → 回到「只展开最近一天」
-    setOpenDays(new Set(days.length ? [days[0][0]] : []));
-  }, [daysKey]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const [openDays, setOpenDays] = useState(() => new Set());
 
   if (!days.length) return null;
 
