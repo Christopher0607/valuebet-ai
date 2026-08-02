@@ -141,6 +141,10 @@ class Bet(Base):
     __tablename__ = "bets"
     id = Column(Integer, primary_key=True)
     match_id = Column(Integer, ForeignKey("matches.id"))
+    # 每个登录账号只能看到、操作自己的下注——没有这一列的话所有账号
+    # 共用同一份注单和同一条资金曲线，换个账号登录看到的是别人的实盘
+    # 记录和余额。本地不登录时固定用 "local"，见 main.py 里的 _owner_key()。
+    owner_id = Column(String, nullable=True, index=True)
     outcome = Column(String, nullable=False)                        # 'home' | 'draw' | 'away'
     stake = Column(Float, default=100)
     odds_used = Column(Float)
@@ -162,6 +166,7 @@ class RealBet(Base):
     id = Column(Integer, primary_key=True)
     match_id = Column(Integer, ForeignKey("matches.id"))
     competition_id = Column(Integer, ForeignKey("competitions.id"))
+    owner_id = Column(String, nullable=True, index=True)          # 同 Bet.owner_id
     platform = Column(String, default="bk8")
     outcome = Column(String, nullable=False)
     stake_real = Column(Float, nullable=False)
@@ -195,6 +200,7 @@ class ParlayBet(Base):
     """
     __tablename__ = "parlay_bets"
     id = Column(Integer, primary_key=True)
+    owner_id = Column(String, nullable=True, index=True)          # 同 Bet.owner_id
     kind = Column(String, nullable=False, default="virtual")        # 'virtual' | 'real'
     stake = Column(Float, nullable=False)
     odds_used = Column(Float, nullable=False)
@@ -228,6 +234,14 @@ class ParlayLeg(Base):
 
 
 class UserSettings(Base):
+    """
+    每个账号一份（资金总额、凯利比例这些）。
+
+    没有单独加 owner_id 列——直接复用已经存在的 setting_key（本来就有
+    unique 约束，语义正好是"一个键对应一份设置"）。云端用 Supabase 的
+    user id 当 setting_key，本地固定用 "default"，跟以前的行为完全一样，
+    不需要迁移旧数据、也不用给这张表打 schema 补丁。
+    """
     __tablename__ = "user_settings"
     id = Column(Integer, primary_key=True)
     setting_key = Column(String, unique=True, default="default")
@@ -252,6 +266,7 @@ class Withdrawal(Base):
     """
     __tablename__ = "withdrawals"
     id = Column(Integer, primary_key=True)
+    owner_id = Column(String, nullable=True, index=True)          # 同 Bet.owner_id
     amount = Column(Float, nullable=False)
     currency = Column(String, default="HKD")
     note = Column(String, nullable=True)
@@ -329,6 +344,52 @@ class PriceLog(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _migrate_add_missing_columns()
+
+
+# create_all() 只会给"整张表都不存在"的情况建表——对已经存在的表，就算
+# 模型里新加了 Column，它也完全不会去 ALTER TABLE。本地 SQLite 因为
+# 每次都是从头建库（或者一键启动时新建的空库）所以天然带着最新字段，
+# 从来看不出这个问题；Railway 上那个 Postgres 库是部署当天就建好的，
+# 之后这个项目里至少新加过两批字段——Match.time_utc、以及各下注表的
+# owner_id——每一次都被 create_all() 无声跳过，实际效果是那次改动在
+# 本地测得再干净，一部署到云端就变成每次写库都报
+# "column ... of relation ... does not exist"，而这类报错只在生产的
+# Postgres 上才会出现，本地完全复现不出来，找起来最费劲。
+#
+# 用 ALTER TABLE ... ADD COLUMN IF NOT EXISTS 显式打补丁，幂等、每次
+# 启动都能跑，不管列已经在不在都不会报错。新增字段以后都要在这里补一行，
+# 不能只加进模型就当完事——这正是这次真实漏掉的那一步。
+_SCHEMA_PATCHES = [
+    ("matches", "time_utc", "VARCHAR"),
+    ("bets", "owner_id", "VARCHAR"),
+    ("real_bets", "owner_id", "VARCHAR"),
+    ("parlay_bets", "owner_id", "VARCHAR"),
+    ("withdrawals", "owner_id", "VARCHAR"),
+]
+
+
+def _migrate_add_missing_columns():
+    """两边语法不一样，不能一条 SQL 走天下——实测验证过，不是猜的：
+
+    `ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...` 在 Postgres 上没问题
+    （9.6 起就支持），但 SQLite **从来没有**支持过这个写法，哪怕是很新的
+    版本（本机 3.45.1 照样报 "near EXISTS: syntax error"）——一开始以为
+    是版本问题，实际测了才发现 SQLite 压根没有这条语法，只支持不带
+    IF NOT EXISTS 的裸 ADD COLUMN。
+
+    所以 SQLite 这边改成先用 PRAGMA table_info 查这一列在不在，不在才
+    执行裸 ADD COLUMN；Postgres 继续用 IF NOT EXISTS，本来就是安全的。
+    """
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        for table, column, ddl_type in _SCHEMA_PATCHES:
+            if IS_SQLITE:
+                existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+                if column not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
+            else:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl_type}"))
 
 
 def get_db():
