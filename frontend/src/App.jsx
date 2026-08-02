@@ -1321,6 +1321,17 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
   const pending = realBets.filter(b => b.result === "pending");
   const settled = realBets.filter(b => b.result !== "pending");
   const pSettled = parlays.filter(p => p.result !== "pending");
+  const pPending = parlays.filter(p => p.result === "pending");
+  // 串关和单场用的是同一套 result 取值（win/loss/pending，见 updater.py），
+  // 所以赢注、待结算、胜率可以直接把两边加起来。
+  //
+  // 这三个数此前只统计单场，但「总注数」是算了串关的，结果这块面板自己
+  // 跟自己对不上——总注数 14、待结算 8、赢注 0，剩下 6 注凭空消失。
+  // 用户就是看到这个才发现的。
+  const wins = settled.filter(b => b.result === "win").length +
+               pSettled.filter(p => p.result === "win").length;
+  const settledCount = settled.length + pSettled.length;
+  const pendingCount = pending.length + pPending.length;
   // 串关的本金和回报要跟单场一起计入这一页的合计，否则「实盘盈亏」这个数
   // 跟资金曲线对不上——曲线一直是把串关算进去的
   const pStake = parlays.reduce((s, p) => s + (p.stake || 0), 0);
@@ -1402,11 +1413,11 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
         <Stat label="总注数" val={realBets.length + parlays.length} color={C.purple} />
         <Stat label="累计流水" val={Math.round(turnover).toLocaleString()} color={C.text} />
         <Stat label="投注金额" val={Math.round(pendingStake).toLocaleString()} color={C.gold} />
-        <Stat label="赢注" val={settled.filter(b => b.result === "win").length} color={C.accent} />
-        <Stat label="待结算" val={pending.length} color={C.gold} />
+        <Stat label="赢注" val={wins} color={C.accent} />
+        <Stat label="待结算" val={pendingCount} color={C.gold} />
         <Stat label="实盘盈亏" val={fnum(bankroll?.real?.total_pnl)} color={(bankroll?.real?.total_pnl || 0) >= 0 ? C.accent : C.red} />
         <Stat label="实盘ROI" val={bankroll?.real ? bankroll.real.roi_pct.toFixed(1) + "%" : "—"} color={(bankroll?.real?.roi_pct || 0) >= 0 ? C.accent : C.red} />
-        <Stat label="胜率" val={settled.length ? pct(settled.filter(b => b.result === "win").length / settled.length) : "—"} color={C.blue} />
+        <Stat label="胜率" val={settledCount ? pct(wins / settledCount) : "—"} color={C.blue} />
       </div>
       {realBets.length === 0 && <Empty text="还没有实盘记录。去「预测」页输入赔率，点击「💵 实盘」按钮。" />}
       {realBets.map(b => {
