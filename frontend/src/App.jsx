@@ -46,6 +46,28 @@ const fod  = v => v ? (+v).toFixed(2) : "—";
 const fdt  = d => new Date(d + "T12:00:00").toLocaleDateString("zh-HK", { month: "short", day: "numeric" });
 const fdatetime = iso => iso ? new Date(iso).toLocaleString("zh-HK", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
 
+// 实盘盈亏和 ROI。传进来的注单已经按联赛筛过了，所以这两个数会跟着
+// 顶部的联赛按钮走——这正是它跟后端 /api/bankroll-summary 的唯一区别。
+//
+// 为什么不直接用后端那两个数：bankroll_summary 是全局接口，没有联赛概念。
+// 筛到某个联赛时，同一块面板里其余六个数都只算该联赛，盈亏和 ROI 却仍然
+// 是所有联赛的合计，于是「西甲 4 战全负、胜率 0%」可以跟「ROI +140%」并排
+// 显示——一个联赛的亏损被另一个联赛的大串关盖住，方向都是反的。
+//
+// 口径跟后端保持一致，只算已结算的注单（待结算还没有输赢，计进去会让 ROI
+// 在比赛开打前就被本金稀释），单场和串关一起算，提款不计入——提款是把赢到
+// 的钱转走，不是一笔新的输赢。所以筛「全部」时这里算出来的应该跟后端完全
+// 相等，有测试盯着这一条。
+function realPnlRoi(bets, parlays) {
+  const sb = bets.filter(b => b.result !== "pending");
+  const sp = parlays.filter(p => p.result !== "pending");
+  const pnl = sb.reduce((s, b) => s + (b.pnl_real || 0), 0) +
+              sp.reduce((s, p) => s + (p.pnl || 0), 0);
+  const staked = sb.reduce((s, b) => s + (b.stake_real || 0), 0) +
+                 sp.reduce((s, p) => s + (p.stake || 0), 0);
+  return { pnl, roi: staked ? (pnl / staked) * 100 : null };
+}
+
 // ── Colors ─────────────────────────────────────────────────
 const C = {
   bg: "#080d14", surface: "#0e1520", card: "#121c2a", border: "#1a2840",
@@ -584,6 +606,10 @@ export default function App() {
         const turnover =
           shownRealBets.reduce((s, b) => s + (b.stake_real || 0), 0) +
           realParlays.reduce((s, p) => s + (p.stake || 0), 0);
+        // 实盘盈亏同样跟着联赛筛选走，跟这一栏其余几个数口径一致。
+        // 不再读 bankroll.real.total_pnl——那个是全局的，混在这排筛过的
+        // 数字里会把某个联赛的亏损用另一个联赛的盈利盖掉。
+        const { pnl: realPnl } = realPnlRoi(shownRealBets, realParlays);
         return (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", background: C.border, gap: 1 }}>
           {[
@@ -594,7 +620,7 @@ export default function App() {
             { v: shownRealBets.length + realParlays.length, l: "实盘下注", c: C.purple },
             { v: Math.round(pendingStake).toLocaleString(), l: "投注金额", c: C.gold },
             { v: Math.round(turnover).toLocaleString(), l: "累计流水", c: C.blue },
-            { v: fnum(bankroll?.real?.total_pnl), l: "实盘盈亏", c: (bankroll?.real?.total_pnl || 0) >= 0 ? C.accent : C.red },
+            { v: fnum(realPnl), l: "实盘盈亏", c: realPnl >= 0 ? C.accent : C.red },
           ].map(({ v, l, c }) => (
             <div key={l} style={{ background: C.surface, padding: "9px 8px", textAlign: "center" }}>
               <div style={{ fontSize: 16, fontWeight: 900, color: c, lineHeight: 1 }}>{v}</div>
@@ -1345,6 +1371,9 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
   const pendingStake =
     pending.reduce((s, b) => s + (b.stake_real || 0), 0) +
     parlays.filter(p => p.result === "pending").reduce((s, p) => s + (p.stake || 0), 0);
+  // realBets 和 parlays 传进来时已经按联赛筛过，所以这两个数跟着筛选走，
+  // 跟这块面板里其余六个数一致。详见 realPnlRoi() 上方的说明。
+  const { pnl: realPnl, roi: realRoi } = realPnlRoi(realBets, parlays);
 
   return (
     <div>
@@ -1415,8 +1444,8 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
         <Stat label="投注金额" val={Math.round(pendingStake).toLocaleString()} color={C.gold} />
         <Stat label="赢注" val={wins} color={C.accent} />
         <Stat label="待结算" val={pendingCount} color={C.gold} />
-        <Stat label="实盘盈亏" val={fnum(bankroll?.real?.total_pnl)} color={(bankroll?.real?.total_pnl || 0) >= 0 ? C.accent : C.red} />
-        <Stat label="实盘ROI" val={bankroll?.real ? bankroll.real.roi_pct.toFixed(1) + "%" : "—"} color={(bankroll?.real?.roi_pct || 0) >= 0 ? C.accent : C.red} />
+        <Stat label="实盘盈亏" val={fnum(realPnl)} color={realPnl >= 0 ? C.accent : C.red} />
+        <Stat label="实盘ROI" val={realRoi == null ? "—" : realRoi.toFixed(1) + "%"} color={(realRoi || 0) >= 0 ? C.accent : C.red} />
         <Stat label="胜率" val={settledCount ? pct(wins / settledCount) : "—"} color={C.blue} />
       </div>
       {realBets.length === 0 && <Empty text="还没有实盘记录。去「预测」页输入赔率，点击「💵 实盘」按钮。" />}
