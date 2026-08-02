@@ -560,15 +560,35 @@ export default function App() {
         }} />
       )}
 
+      {/* 串关（虚拟盘和实盘）算进顶部这条总览栏，跟 RealBetsTab 用同一份过滤。
+          原来「实盘下注」只数 shownRealBets.length，串关记在另一张表
+          （ParlayBet），从来没被计进来过——用户反馈这里的数字比实际少，
+          就是这个。「虚拟下注」有一模一样的缺口，只是虚拟串关目前没有
+          单独的列表页能看到，不容易被注意到，一起补上。 */}
       {/* Stats bar */}
-      {backtest && (
+      {backtest && (() => {
+        const realParlays = parlayBets.filter(p => p.kind === "real");
+        const virtualParlays = parlayBets.filter(p => p.kind === "virtual");
+        // 投注金额：现在还压着多少钱没结算——真实下注 + 真实串关里
+        // result === "pending" 的本金合计
+        const pendingStake =
+          shownRealBets.filter(b => b.result === "pending").reduce((s, b) => s + (b.stake_real || 0), 0) +
+          realParlays.filter(p => p.result === "pending").reduce((s, p) => s + (p.stake || 0), 0);
+        // 累计流水：从有记录以来一共下过多少钱，不分输赢还是待结算——
+        // 跟 RealBetsTab 里的「累计流水」是同一个口径，这里在总览栏里再显示一次
+        const turnover =
+          shownRealBets.reduce((s, b) => s + (b.stake_real || 0), 0) +
+          realParlays.reduce((s, p) => s + (p.stake || 0), 0);
+        return (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", background: C.border, gap: 1 }}>
           {[
             { v: `${backtest.correct}/${backtest.total}`, l: `${backtestLabel} · 预测正确`, c: C.blue },
             { v: pct(backtest.accuracy), l: `${backtestLabel} · 准确率`, c: backtest.accuracy > 0.6 ? C.accent : C.gold },
             { v: backtest.avg_rps?.toFixed(3), l: `${backtestLabel} · 平均RPS`, c: C.accent },
-            { v: shownBets.length, l: "虚拟下注", c: C.text },
-            { v: shownRealBets.length, l: "实盘下注", c: C.purple },
+            { v: shownBets.length + virtualParlays.length, l: "虚拟下注", c: C.text },
+            { v: shownRealBets.length + realParlays.length, l: "实盘下注", c: C.purple },
+            { v: Math.round(pendingStake).toLocaleString(), l: "投注金额", c: C.gold },
+            { v: Math.round(turnover).toLocaleString(), l: "累计流水", c: C.blue },
             { v: fnum(bankroll?.real?.total_pnl), l: "实盘盈亏", c: (bankroll?.real?.total_pnl || 0) >= 0 ? C.accent : C.red },
           ].map(({ v, l, c }) => (
             <div key={l} style={{ background: C.surface, padding: "9px 8px", textAlign: "center" }}>
@@ -577,7 +597,8 @@ export default function App() {
             </div>
           ))}
         </div>
-      )}
+        );
+      })()}
 
       <div style={{ maxWidth: 960, margin: "0 auto", padding: "14px 14px" }}>
         {loading && (
@@ -1299,9 +1320,15 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
   // 跟资金曲线对不上——曲线一直是把串关算进去的
   const pStake = parlays.reduce((s, p) => s + (p.stake || 0), 0);
   const pPnl = pSettled.reduce((s, p) => s + (p.pnl || 0), 0);
-  // 总投注金额：单场实盘 + 串关实盘的本金合计，不分是否已结算——
-  // 「投了多少钱」这个数不该因为比赛还没开打就不算数
-  const totalStake = realBets.reduce((s, b) => s + (b.stake_real || 0), 0) + pStake;
+  // 累计流水：单场实盘 + 串关实盘的本金合计，不分是否已结算——
+  // 「投了多少钱」这个数不该因为比赛还没开打就不算数。跟顶部总览栏
+  // 「累计流水」是同一个口径，这里再显示一次方便在实盘页单独查看。
+  const turnover = realBets.reduce((s, b) => s + (b.stake_real || 0), 0) + pStake;
+  // 投注金额：现在还压着多少钱没结算，跟顶部总览栏那个「投注金额」
+  // 同一个口径——累计流水是"一共下过多少"，这个是"现在还悬着多少"。
+  const pendingStake =
+    pending.reduce((s, b) => s + (b.stake_real || 0), 0) +
+    parlays.filter(p => p.result === "pending").reduce((s, p) => s + (p.stake || 0), 0);
 
   return (
     <div>
@@ -1359,12 +1386,17 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
         </div>
       )}
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 12 }}>
-        {/* 总注数和总投注金额都把单场实盘和串关实盘合起来算——串关此前
-            完全不计入这一页的任何统计，用户反馈「串关记录没进实盘」，
-            上面已经把串关列出来了，这两个数也要跟着算，不然列表里看得到
-            串关、统计栏却当它不存在，看起来还是缺了一块。 */}
+        {/* 总注数、累计流水、投注金额都把单场实盘和串关实盘合起来算——
+            串关此前完全不计入这一页的任何统计，用户反馈「串关记录没进
+            实盘」，上面已经把串关列出来了，这几个数也要跟着算，不然
+            列表里看得到串关、统计栏却当它不存在，看起来还是缺了一块。
+
+            累计流水 vs 投注金额：前者是"一共下过多少"（不分输赢/待结算），
+            后者是"现在还悬着多少"（只算 pending）——两个是不同的问题，
+            都跟顶部总览栏那两个同名统计口径一致。 */}
         <Stat label="总注数" val={realBets.length + parlays.length} color={C.purple} />
-        <Stat label="总投注金额" val={Math.round(totalStake).toLocaleString()} color={C.text} />
+        <Stat label="累计流水" val={Math.round(turnover).toLocaleString()} color={C.text} />
+        <Stat label="投注金额" val={Math.round(pendingStake).toLocaleString()} color={C.gold} />
         <Stat label="赢注" val={settled.filter(b => b.result === "win").length} color={C.accent} />
         <Stat label="待结算" val={pending.length} color={C.gold} />
         <Stat label="实盘盈亏" val={fnum(bankroll?.real?.total_pnl)} color={(bankroll?.real?.total_pnl || 0) >= 0 ? C.accent : C.red} />
