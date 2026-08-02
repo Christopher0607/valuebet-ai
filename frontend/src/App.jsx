@@ -103,6 +103,7 @@ export default function App() {
   const [bankroll, setBankroll] = useState(null);
   const [settings, setSettings] = useState(null);
   const [parlayBets, setParlayBets] = useState([]);
+  const [withdrawals, setWithdrawals] = useState([]);
   const [refreshing, setRefreshing] = useState(false);   // 用缓存先画出来、后台正在刷新
   const [refreshFailed, setRefreshFailed] = useState(false);
   const [showSett, setShowSett] = useState(false);
@@ -121,7 +122,7 @@ export default function App() {
     if (!silent) setLoading(true);
     setApiError(null);
     try {
-      const [st, all, bt, vb, rb, br, se, cp, pl] = await Promise.all([
+      const [st, all, bt, vb, rb, br, se, cp, pl, wd] = await Promise.all([
         api("/status"),
         api("/matches"),
         api("/backtest-summary"),
@@ -137,6 +138,7 @@ export default function App() {
         // （/bankroll-summary）一直把串关算进去了。用户反馈的
         // 「串关的下注和回报没有记录进实盘」就是这个。
         api("/parlay-bets"),
+        api("/withdrawals"),
       ]);
       setStatus(st);
       setMatches(all);
@@ -147,10 +149,11 @@ export default function App() {
       setBankroll(br);
       setSettings(se);
       setParlayBets(pl || []);
+      setWithdrawals(wd || []);
       setRefreshFailed(false);          // 这一轮成功了，清掉上一轮的失败标记
       writeCache(session?.user?.id || "local", {
         status: st, matches: all, backtest: bt.by_competition || [], competitions: cp || [],
-        bets: vb, realBets: rb, bankroll: br, settings: se, parlayBets: pl || [],
+        bets: vb, realBets: rb, bankroll: br, settings: se, parlayBets: pl || [], withdrawals: wd || [],
       });
     } catch (e) {
       // 刚启动那十几秒后端可能还没就绪（uvicorn 还没绑定端口，或者首次
@@ -229,6 +232,7 @@ export default function App() {
       setBankroll(cached.bankroll);
       setSettings(cached.settings);
       setParlayBets(cached.parlayBets || []);
+      setWithdrawals(cached.withdrawals || []);
       setLoading(false);
       setRefreshing(true);
     }
@@ -279,6 +283,25 @@ export default function App() {
     setSettings(s);
     setShowSett(false);
     await loadAll();
+  }
+
+  // 取消一笔还没结算的下注（单场虚拟/单场实盘/串关，用同一个函数是因为
+  // 后端三个端点的删除语义完全一样：只能删 pending 的，成功后都要刷新）。
+  // path 是 "/bets/{id}" | "/real-bets/{id}" | "/parlay-bets/{id}"。
+  // confirm() 是刻意加的——这是不可逆操作，比"点错了会刷新页面"更需要
+  // 一次明确的二次确认，而不是靠 UI 布局去防误触。
+  const [cancelling, setCancelling] = useState(null);
+  async function cancelBet(path, label) {
+    if (!window.confirm(`确定取消这笔${label}吗？取消后无法恢复。`)) return;
+    setCancelling(path);
+    try {
+      await api(path, { method: "DELETE" });
+      await loadAll(true);
+    } catch (e) {
+      alert("取消失败: " + e.message);
+    } finally {
+      setCancelling(null);
+    }
   }
 
   // 比赛日期已经过去、却还挂着 upcoming 的，是抓不到比分留下的陈旧记录，
@@ -629,11 +652,11 @@ export default function App() {
             {shownBets.length === 0 && <Empty text="还没有虚拟下注。去「预测」页输入赔率，点「🎲 虚拟」。" />}
             {shownBets.length > 0 && (
               <div style={{ background: C.surface, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
-                <div style={{ display: "grid", gridTemplateColumns: "64px 1fr 60px 52px 52px 52px 60px 40px", padding: "7px 12px", background: C.muted, fontSize: 9, color: C.textDim, fontWeight: 700, textTransform: "uppercase", gap: 3 }}>
-                  {["日期", "赛事", "方向", "赔率", "本金", "EV", "盈亏", "结果"].map(h => <span key={h}>{h}</span>)}
+                <div style={{ display: "grid", gridTemplateColumns: "64px 1fr 60px 52px 52px 52px 60px 40px 44px", padding: "7px 12px", background: C.muted, fontSize: 9, color: C.textDim, fontWeight: 700, textTransform: "uppercase", gap: 3 }}>
+                  {["日期", "赛事", "方向", "赔率", "本金", "EV", "盈亏", "结果", ""].map(h => <span key={h}>{h}</span>)}
                 </div>
                 {shownBets.map(b => (
-                  <div key={b.id} style={{ display: "grid", gridTemplateColumns: "64px 1fr 60px 52px 52px 52px 60px 40px", padding: "7px 12px", borderBottom: `1px solid ${C.border}`, background: b.result === "win" ? C.accentDim : b.result === "loss" ? C.redDim : "transparent", gap: 3, alignItems: "center", fontSize: 11 }}>
+                  <div key={b.id} style={{ display: "grid", gridTemplateColumns: "64px 1fr 60px 52px 52px 52px 60px 40px 44px", padding: "7px 12px", borderBottom: `1px solid ${C.border}`, background: b.result === "win" ? C.accentDim : b.result === "loss" ? C.redDim : "transparent", gap: 3, alignItems: "center", fontSize: 11 }}>
                     <span style={{ color: C.textDim }}>{fdt(b.date)}</span>
                     <span style={{ fontWeight: 600 }}>{b.team1} vs {b.team2}</span>
                     <span style={{ color: C.textDim }}>{b.outcome === "home" ? "主胜" : b.outcome === "away" ? "客胜" : "平局"}</span>
@@ -642,6 +665,17 @@ export default function App() {
                     <span style={{ color: evc(b.ev_at_bet || 0) }}>{fev(b.ev_at_bet)}</span>
                     <span style={{ fontWeight: 700, color: (b.pnl || 0) > 0 ? C.accent : (b.pnl || 0) < 0 ? C.red : C.textDim }}>{b.pnl != null ? fnum(b.pnl) : "待定"}</span>
                     <span>{b.result === "win" ? "✅" : b.result === "loss" ? "❌" : "⏳"}</span>
+                    {/* 只有待结算的能取消——已结算的删了会悄悄改掉历史战绩，
+                        后端本来就拒绝，这里提前不给按钮，省得点了才看到报错 */}
+                    <span>
+                      {b.result === "pending" && (
+                        <button onClick={() => cancelBet(`/bets/${b.id}`, "虚拟下注")}
+                          disabled={cancelling === `/bets/${b.id}`}
+                          style={{ background: "none", border: `1px solid ${C.red}66`, color: C.red, borderRadius: 5, padding: "3px 6px", fontSize: 10, fontWeight: 700 }}>
+                          {cancelling === `/bets/${b.id}` ? "…" : "✕"}
+                        </button>
+                      )}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -651,7 +685,8 @@ export default function App() {
 
         {!loading && tab === "realbets" && settings && (
           <RealBetsTab realBets={shownRealBets} bankroll={bankroll} settings={settings}
-            parlays={parlayBets.filter(p => p.kind === "real")} />
+            parlays={parlayBets.filter(p => p.kind === "real")} withdrawals={withdrawals}
+            onCancel={cancelBet} cancelling={cancelling} onRefresh={() => loadAll(true)} />
         )}
 
         {!loading && tab === "chart" && bankroll && (
@@ -1147,7 +1182,7 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
 }
 
 // ── Real Bets Tab ────────────────────────────────────────────
-function RealBetsTab({ realBets, bankroll, settings, parlays = [] }) {
+function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals = [], onCancel, cancelling, onRefresh }) {
   const pending = realBets.filter(b => b.result === "pending");
   const settled = realBets.filter(b => b.result !== "pending");
   const pSettled = parlays.filter(p => p.result !== "pending");
@@ -1165,6 +1200,8 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [] }) {
       <div style={{ background: C.purpleDim, border: `1px solid ${C.purple}44`, borderRadius: 8, padding: "9px 13px", fontSize: 11, color: C.purple, marginBottom: 12 }}>
         💡 在「预测」页点「💵 实盘」按钮记录你真实下的注。比赛结束后系统每12小时自动结算盈亏。
       </div>
+
+      <WithdrawSection bankroll={bankroll} withdrawals={withdrawals} onRefresh={onRefresh} />
 
       {/* 串关是单独一张表（ParlayBet），一注对应 3-8 场比赛，塞不进上面那个
           按单场排的表格，所以单独列一段。原来这一页完全不显示串关，
@@ -1184,11 +1221,19 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [] }) {
                 <span style={{ fontWeight: 800, fontSize: 12 }}>
                   {p.legs?.length || 0} 串 1 · 总赔率 {fod(p.odds_used)}
                 </span>
-                <span style={{ fontSize: 11 }}>
+                <span style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 8 }}>
                   本金 {Math.round(p.stake).toLocaleString()} ·{" "}
                   <strong style={{ color: p.result === "win" ? C.accent : p.result === "loss" ? C.red : C.gold }}>
                     {p.result === "pending" ? "待结算" : p.result === "win" ? `赢 ${fnum(p.pnl)}` : `输 ${fnum(p.pnl)}`}
                   </strong>
+                  {/* 只有待结算的能取消——已结算的后端会拒绝，这里提前不给按钮 */}
+                  {p.result === "pending" && onCancel && (
+                    <button onClick={() => onCancel(`/parlay-bets/${p.id}`, "串关")}
+                      disabled={cancelling === `/parlay-bets/${p.id}`}
+                      style={{ background: "none", border: `1px solid ${C.red}66`, color: C.red, borderRadius: 5, padding: "3px 7px", fontSize: 10, fontWeight: 700 }}>
+                      {cancelling === `/parlay-bets/${p.id}` ? "…" : "✕ 取消"}
+                    </button>
+                  )}
                 </span>
               </div>
               {(p.legs || []).map((l, i) => (
@@ -1230,13 +1275,132 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [] }) {
             </div>
             <div style={{ textAlign: "right" }}>
               <div style={{ fontWeight: 700, fontSize: 13 }}>{b.stake_real.toLocaleString()} {b.currency}</div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: b.result === "pending" ? C.gold : won ? C.accent : C.red }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: b.result === "pending" ? C.gold : won ? C.accent : C.red, display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
                 {b.result === "pending" ? "⏳ 待结算" : won ? `✅ +${(b.pnl_real || 0).toFixed(0)}` : `❌ ${(b.pnl_real || 0).toFixed(0)}`}
+                {b.result === "pending" && onCancel && (
+                  <button onClick={() => onCancel(`/real-bets/${b.id}`, "实盘下注")}
+                    disabled={cancelling === `/real-bets/${b.id}`}
+                    style={{ background: "none", border: `1px solid ${C.red}66`, color: C.red, borderRadius: 5, padding: "3px 7px", fontSize: 10, fontWeight: 700 }}>
+                    {cancelling === `/real-bets/${b.id}` ? "…" : "✕ 取消"}
+                  </button>
+                )}
               </div>
             </div>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── 提款 ─────────────────────────────────────────────────────
+// 把在 BK8 等平台赢到的钱转去自己银行账户之后，回来这里登记一笔，
+// 让追踪的实盘资金曲线跟真实情况对得上。只作用于实盘——虚拟盘是
+// 测试模型用的假钱，没有"从假账户提现"这回事，所以这个区块只挂在
+// RealBetsTab 里，不需要在虚拟盘页出现。
+function WithdrawSection({ bankroll, withdrawals, onRefresh }) {
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [cancellingId, setCancellingId] = useState(null);
+
+  const currentBalance = bankroll?.real?.current_balance;
+  const totalWithdrawn = bankroll?.real?.total_withdrawn || 0;
+
+  async function submit(e) {
+    e.preventDefault();
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0) { setErr("请输入大于 0 的金额"); return; }
+    setErr(null); setBusy(true);
+    try {
+      await api("/withdrawals", { method: "POST", body: JSON.stringify({ amount: amt, note: note || null }) });
+      setAmount(""); setNote(""); setOpen(false);
+      await onRefresh?.();
+    } catch (e2) {
+      setErr(e2.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function undo(id) {
+    if (!window.confirm("撤销这笔提款记录吗？这只是改记账，不会真的把钱转回来。")) return;
+    setCancellingId(id);
+    try {
+      await api(`/withdrawals/${id}`, { method: "DELETE" });
+      await onRefresh?.();
+    } catch (e) {
+      alert("撤销失败: " + e.message);
+    } finally {
+      setCancellingId(null);
+    }
+  }
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <div style={{ fontSize: 10, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>实盘可提余额</div>
+          <div style={{ fontSize: 20, fontWeight: 900, marginTop: 2 }}>
+            {currentBalance != null ? currentBalance.toLocaleString() : "—"}
+          </div>
+          {totalWithdrawn > 0 && (
+            <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>累计已提款 {totalWithdrawn.toLocaleString()}</div>
+          )}
+        </div>
+        <button onClick={() => setOpen(o => !o)}
+          style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: C.purple, color: "#0a0510", fontWeight: 800, fontSize: 13 }}>
+          {open ? "取消" : "💸 提款"}
+        </button>
+      </div>
+
+      {open && (
+        <form onSubmit={submit} style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 9, color: C.textDim, marginBottom: 4 }}>提款金额（HKD）</div>
+          {/* fontSize 16 是刻意的——iOS Safari 在输入框字号小于 16px 时会
+              自动放大整个页面，一放大按钮就更难点中，之前实盘登记表单
+              踩过这个坑。 */}
+          <input type="number" inputMode="decimal" step="0.01" autoFocus
+            value={amount} onChange={e => setAmount(e.target.value)}
+            placeholder={currentBalance != null ? `可提 ${currentBalance.toLocaleString()}` : "e.g. 500"}
+            style={{ width: "100%", background: C.card, border: `1px solid ${C.purple}66`, borderRadius: 6, padding: "9px 10px", color: C.text, fontSize: 16, fontWeight: 700, marginBottom: 8 }} />
+          <div style={{ fontSize: 9, color: C.textDim, marginBottom: 4 }}>备注（可选）</div>
+          <input type="text" value={note} onChange={e => setNote(e.target.value)}
+            placeholder="例如：转去银行账户"
+            style={{ width: "100%", background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: "9px 10px", color: C.text, fontSize: 13, marginBottom: 8 }} />
+          {err && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>{err}</div>}
+          <button type="submit" disabled={busy}
+            style={{ width: "100%", padding: "11px", borderRadius: 6, border: "none", background: C.purple, color: "#0a0510", fontWeight: 800, fontSize: 13, opacity: busy ? 0.6 : 1 }}>
+            {busy ? "…" : "确认提款"}
+          </button>
+          <div style={{ fontSize: 10, color: C.textDim, marginTop: 8, lineHeight: 1.6 }}>
+            这里只是记账，不会帮你从 BK8 等平台真的把钱转出来——那一步要你自己在
+            对应平台操作，这里登记一笔是为了让追踪的资金曲线跟真实情况保持一致。
+          </div>
+        </form>
+      )}
+
+      {withdrawals.length > 0 && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 10, color: C.textDim, marginBottom: 6, fontWeight: 700 }}>提款记录</div>
+          {withdrawals.map(w => (
+            <div key={w.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, padding: "6px 0", borderBottom: `1px solid ${C.border}` }}>
+              <span style={{ color: C.textDim }}>
+                {fdatetime(w.withdrawn_at)}{w.note ? ` · ${w.note}` : ""}
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <strong>-{w.amount.toLocaleString()} {w.currency}</strong>
+                <button onClick={() => undo(w.id)} disabled={cancellingId === w.id}
+                  style={{ background: "none", border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 5, padding: "3px 7px", fontSize: 10 }}>
+                  {cancellingId === w.id ? "…" : "撤销"}
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
