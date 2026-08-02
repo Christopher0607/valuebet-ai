@@ -45,9 +45,10 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 # 0.0.0.0，同网段的任何设备都能访问，没必要再把跨域也全开。
 app.add_middleware(
     CORSMiddleware,
-    # 云端前端在 Vercel，域名通过 FRONTEND_ORIGINS 环境变量传进来
-    # （逗号分隔，例如 "https://valuebet.vercel.app"）。不写死是因为
-    # Vercel 每个预览部署都有独立域名。
+    # 云端前端域名通过 FRONTEND_ORIGINS 环境变量传进来，逗号分隔，
+    # 可以填多个——比如同时挂在 Vercel 和 Netlify 上（后者是为了某些
+    # 网络环境下 Vercel 连不上时留一条备用链接），两个域名都能正常用。
+    # 不写死单个域名是因为 Vercel 每个预览部署都有独立域名。
     allow_origins=[o.strip() for o in os.environ.get("FRONTEND_ORIGINS", "").split(",") if o.strip()]
                   + ["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_origin_regex=r"http://(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):5173",

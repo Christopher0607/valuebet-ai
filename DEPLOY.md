@@ -136,6 +136,61 @@
 
 ---
 
+## 三之二、Netlify（前端的另一个选择）
+
+这套前端是纯静态的 Vite 打包产物，没用到任何 Vercel 专属功能，换成
+Netlify 部署完全等价——两边可以**同时留着**，`FRONTEND_ORIGINS` 支持填
+多个域名（逗号分隔），不需要二选一。实际动机：Vercel 的域名在部分网络
+环境下连不上，Netlify 连得上，就留一份 Netlify 的链接给连不上的人用。
+
+1. 仓库根目录已有 `netlify.toml`，构建配置不用管：
+
+   ```toml
+   [build]
+     base = "frontend"
+     command = "npm install && npm run build"
+     publish = "dist"          # 相对 base 算，不是相对仓库根目录
+
+   [[redirects]]
+     from = "/*"
+     to = "/index.html"
+     status = 200
+   ```
+
+   > 踩过的坑：`publish` 一旦设了 `base`，路径就是相对 `base` 算的，
+   > 写成 `"frontend/dist"` 会被解析成 `frontend/frontend/dist`，部署时
+   > 报"目录不存在"。用 Netlify 自己那个解析配置的包（`@netlify/config`）
+   > 实际跑过一遍才发现，不是查文档猜的。
+
+2. app.netlify.com → **Add new site → Import an existing project** →
+   选这个仓库。Netlify 会自动读到 `netlify.toml`，构建设置那几栏
+   （Base directory / Build command / Publish directory）应该已经
+   自动填好，不用手动改。
+
+3. **Site configuration → Environment variables** 加三个，跟 Vercel 那边
+   一模一样：
+
+   ```
+   VITE_API_BASE          = https://xxx.up.railway.app/api      ← 末尾带 /api
+   VITE_SUPABASE_URL      = https://xxxxx.supabase.co
+   VITE_SUPABASE_ANON_KEY = eyJhbGciOi...
+   ```
+
+   同样是**打包时**替换进代码的，改完要重新部署（Deploys → Trigger
+   deploy → Clear cache and deploy site）才会生效。
+
+4. 部署完拿到 `https://随机名字.netlify.app`（可以在 Site configuration →
+   Domain management 里改成自己取的名字）。回 Railway 的 `FRONTEND_ORIGINS`
+   把这个域名**追加**进去（逗号分隔，不要替换掉 Vercel 那个）：
+
+   ```
+   FRONTEND_ORIGINS = https://你的项目.vercel.app,https://随机名字.netlify.app
+   ```
+
+   Railway 会自动重启。两个域名都能正常登录、都能拉到数据。
+
+---
+
 ## 四、验收
 
 打开 Vercel 的域名，应该看到登录页。注册一个账号，登录，能看到六个赛事的数据。

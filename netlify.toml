@@ -1,0 +1,16 @@
+[build]
+  base = "frontend"
+  command = "npm install && npm run build"
+  # publish 是相对 base 算的，不是相对仓库根目录——写成 "frontend/dist"
+  # 会被解析成 frontend/frontend/dist，部署时报"目录不存在"。这一点用
+  # @netlify/config（Netlify 自己用来解析这份文件的包）实际跑过一遍
+  # 才发现，不是查文档猜的。
+  publish = "dist"
+
+# 单页应用的前端路由（比如刷新一个 /xxx 路径）要落到 index.html 由
+# React 自己接管，不然 Netlify 会去找一个真实存在的 /xxx 文件、找不到就
+# 404——这条规则等价于 vercel.json 里那条 rewrites。
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
