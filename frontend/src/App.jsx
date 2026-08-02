@@ -358,6 +358,11 @@ export default function App() {
   // 宁可多显示也不要让用户以为注单丢了
   const shownBets     = bets.filter(b => comp == null || b.competition_id == null || b.competition_id === comp);
   const shownRealBets = realBets.filter(b => comp == null || b.competition_id == null || b.competition_id === comp);
+  // 串关按「有任意一条腿属于该联赛」来筛。串关跨联赛是常态，没法归给
+  // 单一联赛，任一腿命中就算它属于这个联赛是唯一说得通的口径。
+  // 腿上没有 competition_id 时同样不过滤掉，跟上面单场注单的处理一致。
+  const shownParlays  = parlayBets.filter(p => comp == null ||
+    (p.legs || []).some(l => l.competition_id == null || l.competition_id === comp));
 
   // 「全部」模式下顶部统计栏显示什么。
   //
@@ -567,8 +572,8 @@ export default function App() {
           单独的列表页能看到，不容易被注意到，一起补上。 */}
       {/* Stats bar */}
       {backtest && (() => {
-        const realParlays = parlayBets.filter(p => p.kind === "real");
-        const virtualParlays = parlayBets.filter(p => p.kind === "virtual");
+        const realParlays = shownParlays.filter(p => p.kind === "real");
+        const virtualParlays = shownParlays.filter(p => p.kind === "virtual");
         // 投注金额：现在还压着多少钱没结算——真实下注 + 真实串关里
         // result === "pending" 的本金合计
         const pendingStake =
@@ -727,7 +732,7 @@ export default function App() {
 
         {!loading && tab === "realbets" && settings && (
           <RealBetsTab realBets={shownRealBets} bankroll={bankroll} settings={settings}
-            parlays={parlayBets.filter(p => p.kind === "real")} withdrawals={withdrawals}
+            parlays={shownParlays.filter(p => p.kind === "real")} withdrawals={withdrawals}
             onCancel={cancelBet} cancelling={cancelling} onRefresh={() => loadAll(true)} />
         )}
 

@@ -1059,6 +1059,11 @@ def _parlay_dict(p: ParlayBet):
         "legs": [{
             "match_id": l.match_id, "outcome": l.outcome,
             "odds": l.leg_odds, "prob": l.leg_prob,
+            # 前端顶部总览栏和实盘页都有联赛筛选。单场注单本身带
+            # competition_id 能直接筛，串关此前没有任何联赛信息，结果是
+            # 筛到某个联赛时，完全不属于该联赛的串关也被算进注数和金额里。
+            # 串关跨联赛是常态，所以联赛挂在腿上而不是整注上。
+            "competition_id": l.match.competition_id if l.match else None,
             "team1": l.match.team1 if l.match else None,
             "team2": l.match.team2 if l.match else None,
             "date": l.match.date.isoformat() if l.match else None,
