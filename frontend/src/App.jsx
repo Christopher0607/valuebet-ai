@@ -1231,19 +1231,23 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
   // 是覆盖范围的自然边界，不是 bug。
   const t1 = zhTeam(match.team1), t2 = zhTeam(match.team2);
 
-  async function compute() {
+  useEffect(() => {
     const h = parseFloat(oHome), d = parseFloat(oDraw), a = parseFloat(oAway);
-    if (!h || !a) return;
-    try {
-      const result = await api("/odds", {
-        method: "POST",
-        body: JSON.stringify({ match_id: match.id, odds_home: h, odds_draw: d || null, odds_away: a }),
-      });
-      setCalc({ h, d: d || null, a, ...result });
-    } catch (e) {
-      alert("计算失败: " + e.message);
-    }
-  }
+    if (!h || !a) { setCalc(null); return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const result = await api("/odds", {
+          method: "POST",
+          body: JSON.stringify({ match_id: match.id, odds_home: h, odds_draw: d || null, odds_away: a }),
+        });
+        if (!cancelled) setCalc({ h, d: d || null, a, ...result });
+      } catch (e) {
+        if (!cancelled) setCalc(null);
+      }
+    }, 350);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [oHome, oDraw, oAway, match.id]);
 
   async function doVBet(outcome) {
     if (!calc) return;
@@ -1350,7 +1354,7 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
 
       {open && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: "12px 14px", background: C.surface }}>
-          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8 }}>输入赔率，系统计算真实期望值：</div>
+          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8 }}>输入赔率，自动计算真实期望值：</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 7, alignItems: "flex-end", marginBottom: 10 }}>
             {[
               { label: t1, val: oHome, set: setOHome },
@@ -1363,9 +1367,6 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
                   style={{ width: "100%", background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 9px", color: C.text, fontSize: 13, fontWeight: 700 }} />
               </div>
             ))}
-            <button onClick={compute} style={{ padding: "6px 12px", borderRadius: 7, border: "none", background: C.accent, color: C.bg, fontWeight: 800, fontSize: 12, whiteSpace: "nowrap" }}>
-              计算 →
-            </button>
           </div>
 
           {calc && (
