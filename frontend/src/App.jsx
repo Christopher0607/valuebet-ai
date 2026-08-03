@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { isAuthEnabled, supabase, getToken, signIn, signUp, signOut, supabaseUrl, supabaseKeyHint } from "./auth";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
+import { zhTeam } from "./teamNames";
 
 // 打包后走同源相对路径，不写死主机名——后端本来就在托管这份前端，
 // 所以页面从哪个地址打开，API 就跟着走到哪台机器。
@@ -86,6 +87,26 @@ const C = {
 };
 const evc  = v => v > 0.04 ? C.accent : v > 0 ? C.gold : C.red;
 const evbg = v => v > 0.04 ? C.accentDim : v > 0 ? C.goldDim : C.redDim;
+
+// 顶栏两个功能按钮（免责声明/设置/退出）原来是带文字的整块药丸按钮，
+// 手机上三个挤在一起会跟标题抢地方，逼得整行换行。改成图标+悬浮提示，
+// 每个按钮固定 30×30，头部能稳定收在一行。用 SVG 不用 emoji——
+// emoji 图标在不同系统/字体下渲染差异大，线框图标风格统一，也更克制。
+const Icon = {
+  warn: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l9 16H3z" /><path d="M12 9v4M12 16.5v.5" /></svg>,
+  gear: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" /></svg>,
+  logout: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /></svg>,
+};
+function IconBtn({ onClick, title, active, color = C.textDim, children }) {
+  return (
+    <button onClick={onClick} title={title} aria-label={title}
+      style={{ width: 30, height: 30, flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "center",
+               borderRadius: 7, border: `1px solid ${active ? C.purple : C.border}`,
+               background: active ? C.purpleDim : "transparent", color: active ? C.purple : color }}>
+      {children}
+    </button>
+  );
+}
 
 // 上一次成功加载的数据，存在浏览器本地。
 //
@@ -507,55 +528,58 @@ export default function App() {
         /* @keyframes spin 移到了 index.html —— 提前 return 的登录页/认证
            加载态渲染不到这个 style 标签，放这里那两处的圈不会转 */
         code { font-family: 'SF Mono', Consolas, monospace; }
+        /* 标签栏/联赛栏横向滚动，不显示滚动条——手感上更像原生的分段
+           控件，露出滚动条会让人以为是没排好版，而不是"划一下还有更多"。 */
+        .hscroll { scrollbar-width: none; -ms-overflow-style: none; }
+        .hscroll::-webkit-scrollbar { display: none; }
       `}</style>
 
       {/* Status banner - honest about what "automatic" means here */}
       <StatusBanner status={status} updating={updating} onUpdateNow={triggerUpdate}
                     refreshing={refreshing} refreshFailed={refreshFailed} />
 
-      {/* Header */}
-      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "11px 16px", position: "sticky", top: 0, zIndex: 30 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 8, background: `linear-gradient(135deg,${C.accent},${C.blue})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>⚽</div>
-            <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "-0.3px" }}>ValueBet 精算系统</div>
+      {/* Header —— 方向一「静默终端」：单行头部 + 图标按钮 + 横向滚动的
+          标签/联赛栏，不再靠换行把导航挤成两三行。原来「⚠️ 免责声明」
+          「⚙ 设置」「退出」三个带字按钮跟标题抢空间，手机上必定折行，
+          开屏一大半被导航吃掉。图标+悬浮提示能固定宽度，头部稳定收在一行。 */}
+      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "10px 14px", position: "sticky", top: 0, zIndex: 30 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+            <div style={{ width: 28, height: 28, flex: "0 0 auto", borderRadius: 7, background: `linear-gradient(135deg,${C.accent},${C.blue})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>⚽</div>
+            <div style={{ fontWeight: 800, fontSize: 13.5, letterSpacing: "-0.2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>ValueBet 精算系统</div>
           </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button
-              onClick={() => setShowDisclaimer(true)}
-              style={{ padding: "6px 12px", borderRadius: 7, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11, fontWeight: 700 }}
-            >
-              ⚠️ 免责声明
-            </button>
-            <button
-              onClick={() => setShowSett(s => !s)}
-              style={{ padding: "6px 12px", borderRadius: 7, border: `1px solid ${showSett ? C.purple : C.border}`, background: showSett ? C.purpleDim : "transparent", color: showSett ? C.purple : C.textDim, fontSize: 11, fontWeight: 700 }}
-            >
-              ⚙ 设置
-            </button>
+          <div style={{ display: "flex", gap: 4, flex: "0 0 auto" }}>
+            <IconBtn onClick={() => setShowDisclaimer(true)} title="免责声明">
+              <Icon.warn width={15} height={15} />
+            </IconBtn>
+            <IconBtn onClick={() => setShowSett(s => !s)} title="资金与凯利设置" active={showSett}>
+              <Icon.gear width={15} height={15} />
+            </IconBtn>
             {isAuthEnabled && session && (
-              <button
+              <IconBtn
                 onClick={async () => {
                   // 缓存里有实盘记录和资金数字，退出时必须清掉——
                   // 否则换个人在同一台设备上登录，先看到的是上一个人的数据
                   try { localStorage.removeItem(CACHE_KEY); } catch {}
                   await signOut(); setSession(null);
                 }}
-                title={session.user?.email}
-                style={{ padding: "6px 12px", borderRadius: 7, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11, fontWeight: 700 }}
+                title={`退出登录（${session.user?.email}）`}
               >
-                退出
-              </button>
+                <Icon.logout width={15} height={15} />
+              </IconBtn>
             )}
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 4, marginTop: 10, flexWrap: "wrap" }}>
-          {[["upcoming", "⚡ 预测"], ["parlay", "🎯 串关推荐"], ["backtest", "📊 回测"], ["bets", "🎲 虚拟盘"], ["realbets", "💵 实盘"], ["chart", "📈 走势"]].map(([k, l]) => (
+        {/* 标签栏：emoji 换成纯文字——emoji 当图标在不同系统下渲染差异大，
+            给别人用会显得随意；横向滚动代替换行，六个标签固定一行，不占
+            第二行空间。className="hscroll" 的滚动条隐藏规则见下面全局 style。 */}
+        <div className="hscroll" style={{ display: "flex", gap: 4, marginTop: 9, overflowX: "auto" }}>
+          {[["upcoming", "预测"], ["parlay", "串关推荐"], ["backtest", "回测"], ["bets", "虚拟盘"], ["realbets", "实盘"], ["chart", "走势"]].map(([k, l]) => (
             <button
               key={k}
               onClick={() => setTab(k)}
-              style={{ padding: "5px 11px", borderRadius: 7, border: `1px solid ${tab === k ? C.accent : C.border}`, background: tab === k ? C.accentDim : "transparent", color: tab === k ? C.accent : C.textDim, fontSize: 11, fontWeight: 700 }}
+              style={{ padding: "5px 11px", borderRadius: 7, border: `1px solid ${tab === k ? C.accent : C.border}`, background: tab === k ? C.accentDim : "transparent", color: tab === k ? C.accent : C.textDim, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", flex: "0 0 auto" }}
             >
               {l}
             </button>
@@ -563,17 +587,18 @@ export default function App() {
         </div>
 
         {competitions.length > 0 && (
-          <div style={{ display: "flex", gap: 4, marginTop: 7, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, marginRight: 2 }}>赛事</span>
+          <div className="hscroll" style={{ display: "flex", gap: 4, marginTop: 7, overflowX: "auto", alignItems: "center" }}>
+            <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, marginRight: 2, flex: "0 0 auto" }}>赛事</span>
             {[{ id: null, name_zh: "全部" }, ...competitions].map(c => {
               const on = comp === c.id;
               const n = c.id == null ? matches.length : matches.filter(m => m.competition_id === c.id).length;
               return (
                 <button key={String(c.id)} onClick={() => setComp(c.id)}
-                  style={{ padding: "4px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                  style={{ padding: "4px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", flex: "0 0 auto",
                            border: `1px solid ${on ? C.blue : C.border}`,
                            background: on ? C.blueDim : "transparent",
-                           color: on ? C.blue : C.textDim }}>
+                           color: on ? C.blue : C.textDim,
+                           fontVariantNumeric: "tabular-nums" }}>
                   {c.name_zh}<span style={{ opacity: 0.55, marginLeft: 4 }}>{n}</span>
                 </button>
               );
@@ -697,7 +722,7 @@ export default function App() {
                         return (
                           <div key={m.id} style={{ display: "grid", gridTemplateColumns: "68px 1fr 52px 52px 52px 52px 52px 44px", minWidth: 560, padding: "7px 12px", borderBottom: `1px solid ${C.border}`, background: p.is_correct ? "transparent" : C.redDim, gap: 3, alignItems: "center", fontSize: 11 }}>
                             <span style={{ color: C.textDim }}>{fdt(m.date)}</span>
-                            <span style={{ fontWeight: 600 }}>{m.team1} <span style={{ color: C.textDim }}>vs</span> {m.team2}</span>
+                            <span style={{ fontWeight: 600 }}>{zhTeam(m.team1)} <span style={{ color: C.textDim }}>vs</span> {zhTeam(m.team2)}</span>
                             <span style={{ textAlign: "center", color: p.prob_home > p.prob_draw && p.prob_home > p.prob_away ? C.accent : C.textDim }}>{pct(p.prob_home)}</span>
                             <span style={{ textAlign: "center", color: p.prob_draw > p.prob_home && p.prob_draw > p.prob_away ? C.accent : C.textDim }}>{pct(p.prob_draw)}</span>
                             <span style={{ textAlign: "center", color: p.prob_away > p.prob_home && p.prob_away > p.prob_draw ? C.accent : C.textDim }}>{pct(p.prob_away)}</span>
@@ -743,7 +768,7 @@ export default function App() {
                 {shownBets.map(b => (
                   <div key={b.id} style={{ display: "grid", gridTemplateColumns: "64px 1fr 60px 52px 52px 52px 60px 40px 44px", padding: "7px 12px", borderBottom: `1px solid ${C.border}`, background: b.result === "win" ? C.accentDim : b.result === "loss" ? C.redDim : "transparent", gap: 3, alignItems: "center", fontSize: 11 }}>
                     <span style={{ color: C.textDim }}>{fdt(b.date)}</span>
-                    <span style={{ fontWeight: 600 }}>{b.team1} vs {b.team2}</span>
+                    <span style={{ fontWeight: 600 }}>{zhTeam(b.team1)} vs {zhTeam(b.team2)}</span>
                     <span style={{ color: C.textDim }}>{b.outcome === "home" ? "主胜" : b.outcome === "away" ? "客胜" : "平局"}</span>
                     <span style={{ fontWeight: 700 }}>{fod(b.odds_used)}</span>
                     <span>{b.stake}</span>
@@ -1165,6 +1190,12 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
   const mdl = match.prediction;
   if (!mdl) return null;
 
+  // 队名中文简称——纯展示层替换，match.team1/team2 本身不变，下面所有
+  // API 调用（compute/doVBet/doRBet）用的都还是 match.id，不涉及队名，
+  // 换成中文不影响任何一次请求的数据。查不到译名的队伍照原样显示英文，
+  // 是覆盖范围的自然边界，不是 bug。
+  const t1 = zhTeam(match.team1), t2 = zhTeam(match.team2);
+
   async function compute() {
     const h = parseFloat(oHome), d = parseFloat(oDraw), a = parseFloat(oAway);
     if (!h || !a) return;
@@ -1231,7 +1262,7 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
     <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
       <div onClick={() => setOpen(o => !o)} style={{ padding: "11px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", userSelect: "none" }}>
         <div>
-          <div style={{ fontWeight: 700, fontSize: 13 }}>{match.team1} <span style={{ color: C.textDim, fontWeight: 400, fontSize: 12 }}>vs</span> {match.team2}</div>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>{t1} <span style={{ color: C.textDim, fontWeight: 400, fontSize: 12 }}>vs</span> {t2}</div>
           <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>
             {match.competition_name && <span style={{ color: C.blue, fontWeight: 700 }}>{match.competition_name} · </span>}
             {fdt(match.date)}{match.time_utc ? ` ${match.time_utc}` : ""} · {match.round} · {match.ground}
@@ -1247,31 +1278,49 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 1, background: C.border }}>
-        {[
-          { label: match.team1, prob: mdl.prob_home, xg: mdl.xg_home },
+      {(() => {
+        const items = [
+          { label: t1, prob: mdl.prob_home, xg: mdl.xg_home },
           { label: "平局", prob: mdl.prob_draw, xg: null },
-          { label: match.team2, prob: mdl.prob_away, xg: mdl.xg_away },
-        ].map((item, idx) => (
-          <div key={idx} style={{ background: C.card, padding: "9px 12px" }}>
-            <div style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 3 }}>{item.label}</div>
-            <div style={{ fontSize: 19, fontWeight: 900, color: item.prob === maxP ? C.accent : C.text }}>{pct(item.prob)}</div>
-            {item.xg !== null && <div style={{ fontSize: 10, color: C.textDim, marginTop: 1 }}>xG {item.xg}</div>}
-            <div style={{ marginTop: 5, height: 2, background: C.border, borderRadius: 1 }}>
-              <div style={{ width: pct(item.prob), height: "100%", background: item.prob === maxP ? C.accent : C.muted, borderRadius: 1 }} />
+          { label: t2, prob: mdl.prob_away, xg: mdl.xg_away },
+        ];
+        // 三段式色条按名次上色（第一/第二/第三，不是固定按位置），
+        // 用下标排名而不是数值比较——数值比较在真正打平时会让两段同时
+        // 判定成"最大"，色条上出现两段强调色，跟上面数字变色的判断
+        // (item.prob === maxP) 也会不一致。设计原型阶段筛出过这个问题：
+        // 客队占优时若色条固定给主队上色，会出现"数字标客队、色条标主队"
+        // 的自相矛盾，10 场真实数据逐场核对过才改成现在这个按名次的版本。
+        const order = [0, 1, 2].sort((a, b) => items[b].prob - items[a].prob);
+        const rank = []; order.forEach((idx, pos) => { rank[idx] = pos; });
+        const tone = idx => rank[idx] === 0 ? C.accent : rank[idx] === 1 ? C.textDim : C.muted;
+        return (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 1, background: C.border }}>
+              {items.map((item, idx) => (
+                <div key={idx} style={{ background: C.card, padding: "9px 12px", minWidth: 0 }}>
+                  <div style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.label}</div>
+                  <div style={{ fontSize: 19, fontWeight: 900, color: item.prob === maxP ? C.accent : C.text, fontVariantNumeric: "tabular-nums" }}>{pct(item.prob)}</div>
+                  {item.xg !== null && <div style={{ fontSize: 10, color: C.textDim, marginTop: 1, fontVariantNumeric: "tabular-nums" }}>xG {item.xg}</div>}
+                </div>
+              ))}
             </div>
-          </div>
-        ))}
-      </div>
+            <div style={{ display: "flex", height: 3, background: C.border }}>
+              {items.map((item, idx) => (
+                <div key={idx} style={{ width: pct(item.prob), height: "100%", background: tone(idx) }} />
+              ))}
+            </div>
+          </>
+        );
+      })()}
 
       {open && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: "12px 14px", background: C.surface }}>
           <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8 }}>输入赔率，系统计算真实期望值：</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 7, alignItems: "flex-end", marginBottom: 10 }}>
             {[
-              { label: match.team1, val: oHome, set: setOHome },
+              { label: t1, val: oHome, set: setOHome },
               { label: "平局", val: oDraw, set: setODraw },
-              { label: match.team2, val: oAway, set: setOAway },
+              { label: t2, val: oAway, set: setOAway },
             ].map(f => (
               <div key={f.label}>
                 <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>{f.label}</div>
@@ -1288,9 +1337,9 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
             <div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 7, marginBottom: 10 }}>
                 {[
-                  { key: "home", label: match.team1, evVal: calc.ev_home, kPct: calc.kelly_home, kAmt: calc.kelly_home_amount, odds: calc.h },
+                  { key: "home", label: t1, evVal: calc.ev_home, kPct: calc.kelly_home, kAmt: calc.kelly_home_amount, odds: calc.h },
                   ...(calc.d ? [{ key: "draw", label: "平局", evVal: calc.ev_draw, kPct: calc.kelly_draw, kAmt: calc.kelly_draw_amount, odds: calc.d }] : []),
-                  { key: "away", label: match.team2, evVal: calc.ev_away, kPct: calc.kelly_away, kAmt: calc.kelly_away_amount, odds: calc.a },
+                  { key: "away", label: t2, evVal: calc.ev_away, kPct: calc.kelly_away, kAmt: calc.kelly_away_amount, odds: calc.a },
                 ].map(item => (
                   <div key={item.key} style={{ background: evbg(item.evVal), border: `1px solid ${evc(item.evVal)}44`, borderRadius: 8, padding: "9px 10px" }}>
                     <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>{item.label} @ {fod(item.odds)}</div>
@@ -1425,7 +1474,7 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
               </div>
               {(p.legs || []).map((l, i) => (
                 <div key={i} style={{ fontSize: 10.5, color: C.textDim, paddingLeft: 8, lineHeight: 1.7 }}>
-                  · {l.team1} vs {l.team2} — 押 {l.outcome === "home" ? l.team1 : l.outcome === "away" ? l.team2 : "平局"} @ {fod(l.odds)}
+                  · {zhTeam(l.team1)} vs {zhTeam(l.team2)} — 押 {l.outcome === "home" ? zhTeam(l.team1) : l.outcome === "away" ? zhTeam(l.team2) : "平局"} @ {fod(l.odds)}
                   {/* 后端不返回逐腿的输赢，只返回比分。直接显示比分，
                       是赢是输一眼能看出来，也不用前端再判一次（判重了就
                       有两处结算逻辑，早晚会不一致）。 */}
@@ -1460,7 +1509,7 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
         return (
           <div key={b.id} style={{ background: C.card, border: `1px solid ${b.result === "pending" ? C.gold + "44" : won ? C.accent + "44" : C.red + "44"}`, borderRadius: 8, marginBottom: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 12 }}>{b.team1} vs {b.team2}</div>
+              <div style={{ fontWeight: 700, fontSize: 12 }}>{zhTeam(b.team1)} vs {zhTeam(b.team2)}</div>
               <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>
                 押 {b.outcome === "home" ? "主队" : b.outcome === "away" ? "客队" : "平局"} · 赔率 {fod(b.odds_used)} · {b.ev_at_bet != null ? `EV ${fev(b.ev_at_bet)}` : ""}
               </div>
@@ -1803,7 +1852,7 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
                   {isSel ? "✓" : ""}
                 </div>
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 13 }}>{m.team1} <span style={{ color: C.textDim, fontWeight: 400, fontSize: 12 }}>vs</span> {m.team2}</div>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{zhTeam(m.team1)} <span style={{ color: C.textDim, fontWeight: 400, fontSize: 12 }}>vs</span> {zhTeam(m.team2)}</div>
                   <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>{fdt(m.date)} · {m.round}</div>
                 </div>
               </div>
@@ -1812,9 +1861,9 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
             {isSel && (
               <div style={{ padding: "8px 14px 12px", borderTop: `1px solid ${C.border}`, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(90px, 1fr))", gap: 7 }}>
                 {[
-                  { label: `${m.team1} 赔率`, field: "home" },
+                  { label: `${zhTeam(m.team1)} 赔率`, field: "home" },
                   { label: "平局 赔率", field: "draw" },
-                  { label: `${m.team2} 赔率`, field: "away" },
+                  { label: `${zhTeam(m.team2)} 赔率`, field: "away" },
                 ].map(f => (
                   <div key={f.field}>
                     <div style={{ fontSize: 9, color: C.textDim, marginBottom: 3 }}>{f.label}</div>
