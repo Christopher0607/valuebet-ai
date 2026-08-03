@@ -114,17 +114,6 @@ const C = {
 const evc  = v => v > 0.04 ? C.accent : v > 0 ? C.gold : C.red;
 const evbg = v => v > 0.04 ? C.accentDim : v > 0 ? C.goldDim : C.redDim;
 
-// 顶部这一整块（标题栏+标签+联赛筛选+统计条）单独用白色主题，下面的比赛卡片/
-// 各页内容保持原来的深色——用户明确要求"上面的排版改白色背景，但概率条那套
-// 青色设计保留"，理解为浅色顶栏 + 深色内容画布这种分层，不是整页换色。
-// 强调色统一还是用 C.accent（青色），不额外引入第二个强调色，两块区域视觉上
-// 才连贯——只是背景在深浅之间切换，色彩语言不变。
-const HDR = {
-  bg: "#ffffff", surface: "#f7f8fa", border: "#e3e5ea",
-  text: "#161a1f", textDim: "#6b7280",
-  gold: "#b8790a", purple: "#7c5cdb",  // 浅底下比深底版本更深一点，保证对比度
-};
-
 // 顶栏两个功能按钮（免责声明/设置/退出）原来是带文字的整块药丸按钮，
 // 手机上三个挤在一起会跟标题抢地方，逼得整行换行。改成图标+悬浮提示，
 // 每个按钮固定 30×30，头部能稳定收在一行。用 SVG 不用 emoji——
@@ -137,12 +126,12 @@ const Icon = {
   // 也不受系统/字体影响渲染成完全不同的样子。
   ball: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="12" cy="12" r="9" /><path d="M12 7.5l3.5 2.5-1.3 4h-4.4L8.5 10z" /><path d="M12 3v4.5M4.5 8.7l3.4 1.5M4.7 15.5l3.6-1.3M19.5 8.7l-3.4 1.5M19.3 15.5l-3.6-1.3M12 16.5V21" /></svg>,
 };
-function IconBtn({ onClick, title, active, color = HDR.textDim, children }) {
+function IconBtn({ onClick, title, active, color = C.textDim, children }) {
   return (
     <button onClick={onClick} title={title} aria-label={title}
       style={{ width: 30, height: 30, flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "center",
-               borderRadius: 7, border: `1px solid ${active ? C.accent : HDR.border}`,
-               background: active ? C.accentDim : "transparent", color: active ? C.accent : color }}>
+               borderRadius: 7, border: `1px solid ${active ? C.purple : C.border}`,
+               background: active ? C.purpleDim : "transparent", color: active ? C.purple : color }}>
       {children}
     </button>
   );
@@ -578,21 +567,19 @@ export default function App() {
       <StatusBanner status={status} updating={updating} onUpdateNow={triggerUpdate}
                     refreshing={refreshing} refreshFailed={refreshFailed} />
 
-      {/* Header —— 顶栏这一整块单独用白色主题（标题栏/标签/联赛筛选/下面的
-          统计条），比赛卡片等内容区保持原来的深色，是浅色顶栏+深色画布的
-          分层设计，不是整页换色。强调色统一用 C.accent（青色），顶栏和
-          内容区共用同一个强调色，只有背景深浅不同。
-          单行头部 + 图标按钮 + 横向滚动的标签/联赛栏，不再靠换行把导航挤成
-          两三行。原来「⚠️ 免责声明」「⚙ 设置」「退出」三个带字按钮跟标题
-          抢空间，手机上必定折行，开屏一大半被导航吃掉。图标+悬浮提示能
-          固定宽度，头部稳定收在一行。 */}
-      <div style={{ background: HDR.bg, borderBottom: `1px solid ${HDR.border}`, padding: "10px 14px", position: "sticky", top: 0, zIndex: 30 }}>
+      {/* Header —— 单行头部 + 图标按钮 + 横向滚动的标签/联赛栏，不再靠
+          换行把导航挤成两三行。原来「⚠️ 免责声明」「⚙ 设置」「退出」
+          三个带字按钮跟标题抢空间，手机上必定折行，开屏一大半被导航吃掉。
+          图标+悬浮提示能固定宽度，头部稳定收在一行。
+          试过顶栏单独换白色背景、内容区保持深色的分层方案，用户看完还是
+          想要跟内容区一致的深色，这里维持统一的深色主题，不分层。 */}
+      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "10px 14px", position: "sticky", top: 0, zIndex: 30 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
             <div style={{ width: 28, height: 28, flex: "0 0 auto", borderRadius: 7, background: `linear-gradient(135deg,${C.accent},${C.blue})`, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>
               <Icon.ball width={16} height={16} />
             </div>
-            <div style={{ fontWeight: 800, fontSize: 13.5, letterSpacing: "-0.2px", color: HDR.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>ValueBet 精算系统</div>
+            <div style={{ fontWeight: 800, fontSize: 13.5, letterSpacing: "-0.2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>ValueBet 精算系统</div>
           </div>
           <div style={{ display: "flex", gap: 4, flex: "0 0 auto" }}>
             <IconBtn onClick={() => setShowDisclaimer(true)} title="免责声明">
@@ -617,16 +604,15 @@ export default function App() {
           </div>
         </div>
 
-        {/* 标签栏：下划线样式（活动项底部一条 2px 强调色），不再是深色版本的
-            药丸背景——白底上用下划线比实心色块更轻。横向滚动代替换行，
-            六个标签固定一行，不占第二行空间。className="hscroll" 的滚动条
-            隐藏规则见下面全局 style。 */}
-        <div className="hscroll" style={{ display: "flex", gap: 2, marginTop: 9, overflowX: "auto", borderBottom: `1px solid ${HDR.border}` }}>
+        {/* 标签栏：emoji 换成纯文字——emoji 当图标在不同系统下渲染差异大，
+            给别人用会显得随意；横向滚动代替换行，六个标签固定一行，不占
+            第二行空间。className="hscroll" 的滚动条隐藏规则见下面全局 style。 */}
+        <div className="hscroll" style={{ display: "flex", gap: 4, marginTop: 9, overflowX: "auto" }}>
           {[["upcoming", "预测"], ["parlay", "串关推荐"], ["backtest", "回测"], ["bets", "虚拟盘"], ["realbets", "实盘"], ["chart", "走势"]].map(([k, l]) => (
             <button
               key={k}
               onClick={() => setTab(k)}
-              style={{ padding: "7px 11px", border: "none", borderBottom: `2px solid ${tab === k ? C.accent : "transparent"}`, background: "transparent", color: tab === k ? C.accent : HDR.textDim, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", flex: "0 0 auto" }}
+              style={{ padding: "5px 11px", borderRadius: 7, border: `1px solid ${tab === k ? C.accent : C.border}`, background: tab === k ? C.accentDim : "transparent", color: tab === k ? C.accent : C.textDim, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", flex: "0 0 auto" }}
             >
               {l}
             </button>
@@ -634,17 +620,17 @@ export default function App() {
         </div>
 
         {competitions.length > 0 && (
-          <div className="hscroll" style={{ display: "flex", gap: 4, marginTop: 9, overflowX: "auto", alignItems: "center" }}>
-            <span style={{ fontSize: 10, color: HDR.textDim, fontWeight: 700, marginRight: 2, flex: "0 0 auto" }}>赛事</span>
+          <div className="hscroll" style={{ display: "flex", gap: 4, marginTop: 7, overflowX: "auto", alignItems: "center" }}>
+            <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, marginRight: 2, flex: "0 0 auto" }}>赛事</span>
             {[{ id: null, name_zh: "全部" }, ...competitions].map(c => {
               const on = comp === c.id;
               const n = c.id == null ? matches.length : matches.filter(m => m.competition_id === c.id).length;
               return (
                 <button key={String(c.id)} onClick={() => setComp(c.id)}
-                  style={{ padding: "4px 9px", borderRadius: 999, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", flex: "0 0 auto",
-                           border: `1px solid ${on ? C.accent : HDR.border}`,
-                           background: on ? C.accentDim : "transparent",
-                           color: on ? C.accent : HDR.textDim,
+                  style={{ padding: "4px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", flex: "0 0 auto",
+                           border: `1px solid ${on ? C.blue : C.border}`,
+                           background: on ? C.blueDim : "transparent",
+                           color: on ? C.blue : C.textDim,
                            fontVariantNumeric: "tabular-nums" }}>
                   {c.name_zh}<span style={{ opacity: 0.55, marginLeft: 4 }}>{n}</span>
                 </button>
@@ -689,20 +675,20 @@ export default function App() {
         // 数字里会把某个联赛的亏损用另一个联赛的盈利盖掉。
         const { pnl: realPnl } = realPnlRoi(shownRealBets, realParlays);
         return (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", background: HDR.border, gap: 1 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", background: C.border, gap: 1 }}>
           {[
             { v: `${backtest.correct}/${backtest.total}`, l: `${backtestLabel} · 预测正确`, c: C.blue },
-            { v: pct(backtest.accuracy), l: `${backtestLabel} · 准确率`, c: backtest.accuracy > 0.6 ? C.accent : HDR.gold },
+            { v: pct(backtest.accuracy), l: `${backtestLabel} · 准确率`, c: backtest.accuracy > 0.6 ? C.accent : C.gold },
             { v: backtest.avg_rps?.toFixed(3), l: `${backtestLabel} · 平均RPS`, c: C.accent },
-            { v: shownBets.length + virtualParlays.length, l: "虚拟下注", c: HDR.text },
-            { v: shownRealBets.length + realParlays.length, l: "实盘下注", c: HDR.purple },
-            { v: Math.round(pendingStake).toLocaleString(), l: "投注金额", c: HDR.gold },
+            { v: shownBets.length + virtualParlays.length, l: "虚拟下注", c: C.text },
+            { v: shownRealBets.length + realParlays.length, l: "实盘下注", c: C.purple },
+            { v: Math.round(pendingStake).toLocaleString(), l: "投注金额", c: C.gold },
             { v: Math.round(turnover).toLocaleString(), l: "累计流水", c: C.blue },
             { v: fnum(realPnl), l: "实盘盈亏", c: realPnl >= 0 ? C.accent : C.red },
           ].map(({ v, l, c }) => (
-            <div key={l} style={{ background: HDR.bg, padding: "9px 8px", textAlign: "center" }}>
+            <div key={l} style={{ background: C.surface, padding: "9px 8px", textAlign: "center" }}>
               <div style={{ fontSize: 16, fontWeight: 900, color: c, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{v}</div>
-              <div style={{ fontSize: 9, color: HDR.textDim, textTransform: "uppercase", letterSpacing: "0.4px", marginTop: 3 }}>{l}</div>
+              <div style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.4px", marginTop: 3 }}>{l}</div>
             </div>
           ))}
         </div>
