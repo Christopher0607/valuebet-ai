@@ -75,6 +75,32 @@ const realPnlRoi = (bets, parlays) => settledPnlRoi(bets, parlays, "stake_real",
 // 「总注数」等其余统计目前的范围一致。
 const virtualPnlRoi = (bets) => settledPnlRoi(bets, [], "stake", "pnl");
 
+// 资金曲线按天拆出"哪天赚了/亏了多少"。bankroll_summary 的 series 是按
+// 资金事件（每笔结算）挂点的，不是按天——同一天可能有好几个点，也可能
+// 好几天之间完全没有点（那几天没有任何注单结算）。想要的是"这一天收盘
+// 的余额比上一个真正有数据的日子变化了多少"，所以先按日期去重只留每天
+// 最后一个点，再对相邻的两个不同日期作差——这样同一天内的多笔结算会被
+// 自然合并成一个净值，中间空档的日子也不会被当成"变化为 0"单独列出来。
+function dailyPnl(series, key) {
+  if (!series.length) return [];
+  // series[0] 就是"下注发生之前"那个基准点（起始资金），不管它被标了哪个
+  // 日期，数值上都代表 0 号点。第一个真正有事件的日期也要跟它比出一个
+  // 差值来，不能因为"它是数组第一项、没有再前一项"就整天不显示——
+  // 那样第一天真实发生的盈亏会凭空从列表里消失。
+  const base = series[0][key];
+  const lastOfDay = new Map();
+  for (const pt of series) lastOfDay.set(pt.date, pt[key]);
+  const rows = [];
+  let prev = base;
+  for (const date of lastOfDay.keys()) {
+    const val = lastOfDay.get(date);
+    const delta = val - prev;
+    if (Math.abs(delta) > 0.005) rows.push({ date, delta });
+    prev = val;
+  }
+  return rows.reverse();  // 最近的日期排在最前面
+}
+
 // ── Colors ─────────────────────────────────────────────────
 const C = {
   bg: "#080d14", surface: "#0e1520", card: "#121c2a", border: "#1a2840",
@@ -88,6 +114,17 @@ const C = {
 const evc  = v => v > 0.04 ? C.accent : v > 0 ? C.gold : C.red;
 const evbg = v => v > 0.04 ? C.accentDim : v > 0 ? C.goldDim : C.redDim;
 
+// 顶部这一整块（标题栏+标签+联赛筛选+统计条）单独用白色主题，下面的比赛卡片/
+// 各页内容保持原来的深色——用户明确要求"上面的排版改白色背景，但概率条那套
+// 青色设计保留"，理解为浅色顶栏 + 深色内容画布这种分层，不是整页换色。
+// 强调色统一还是用 C.accent（青色），不额外引入第二个强调色，两块区域视觉上
+// 才连贯——只是背景在深浅之间切换，色彩语言不变。
+const HDR = {
+  bg: "#ffffff", surface: "#f7f8fa", border: "#e3e5ea",
+  text: "#161a1f", textDim: "#6b7280",
+  gold: "#b8790a", purple: "#7c5cdb",  // 浅底下比深底版本更深一点，保证对比度
+};
+
 // 顶栏两个功能按钮（免责声明/设置/退出）原来是带文字的整块药丸按钮，
 // 手机上三个挤在一起会跟标题抢地方，逼得整行换行。改成图标+悬浮提示，
 // 每个按钮固定 30×30，头部能稳定收在一行。用 SVG 不用 emoji——
@@ -96,13 +133,16 @@ const Icon = {
   warn: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l9 16H3z" /><path d="M12 9v4M12 16.5v.5" /></svg>,
   gear: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" /></svg>,
   logout: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /></svg>,
+  // 品牌标——原来是 ⚽ emoji，换成线框球图标，跟其他 SVG 图标统一风格，
+  // 也不受系统/字体影响渲染成完全不同的样子。
+  ball: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="12" cy="12" r="9" /><path d="M12 7.5l3.5 2.5-1.3 4h-4.4L8.5 10z" /><path d="M12 3v4.5M4.5 8.7l3.4 1.5M4.7 15.5l3.6-1.3M19.5 8.7l-3.4 1.5M19.3 15.5l-3.6-1.3M12 16.5V21" /></svg>,
 };
-function IconBtn({ onClick, title, active, color = C.textDim, children }) {
+function IconBtn({ onClick, title, active, color = HDR.textDim, children }) {
   return (
     <button onClick={onClick} title={title} aria-label={title}
       style={{ width: 30, height: 30, flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "center",
-               borderRadius: 7, border: `1px solid ${active ? C.purple : C.border}`,
-               background: active ? C.purpleDim : "transparent", color: active ? C.purple : color }}>
+               borderRadius: 7, border: `1px solid ${active ? C.accent : HDR.border}`,
+               background: active ? C.accentDim : "transparent", color: active ? C.accent : color }}>
       {children}
     </button>
   );
@@ -488,7 +528,7 @@ export default function App() {
     return (
       <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter',system-ui,sans-serif", padding: 24 }}>
         <div style={{ maxWidth: 480, background: C.card, border: `1px solid ${C.red}44`, borderRadius: 12, padding: 28 }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>⚠️</div>
+          <div style={{ color: C.red, marginBottom: 12 }}><Icon.warn width={28} height={28} /></div>
           <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 8 }}>无法连接本地后端</div>
           <div style={{ fontSize: 13, color: C.textDim, lineHeight: 1.7, marginBottom: 16 }}>
             前端正常运行，但无法访问 <code style={{ background: C.bg, padding: "2px 5px", borderRadius: 4 }}>{API}</code>。
@@ -538,15 +578,21 @@ export default function App() {
       <StatusBanner status={status} updating={updating} onUpdateNow={triggerUpdate}
                     refreshing={refreshing} refreshFailed={refreshFailed} />
 
-      {/* Header —— 方向一「静默终端」：单行头部 + 图标按钮 + 横向滚动的
-          标签/联赛栏，不再靠换行把导航挤成两三行。原来「⚠️ 免责声明」
-          「⚙ 设置」「退出」三个带字按钮跟标题抢空间，手机上必定折行，
-          开屏一大半被导航吃掉。图标+悬浮提示能固定宽度，头部稳定收在一行。 */}
-      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "10px 14px", position: "sticky", top: 0, zIndex: 30 }}>
+      {/* Header —— 顶栏这一整块单独用白色主题（标题栏/标签/联赛筛选/下面的
+          统计条），比赛卡片等内容区保持原来的深色，是浅色顶栏+深色画布的
+          分层设计，不是整页换色。强调色统一用 C.accent（青色），顶栏和
+          内容区共用同一个强调色，只有背景深浅不同。
+          单行头部 + 图标按钮 + 横向滚动的标签/联赛栏，不再靠换行把导航挤成
+          两三行。原来「⚠️ 免责声明」「⚙ 设置」「退出」三个带字按钮跟标题
+          抢空间，手机上必定折行，开屏一大半被导航吃掉。图标+悬浮提示能
+          固定宽度，头部稳定收在一行。 */}
+      <div style={{ background: HDR.bg, borderBottom: `1px solid ${HDR.border}`, padding: "10px 14px", position: "sticky", top: 0, zIndex: 30 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
-            <div style={{ width: 28, height: 28, flex: "0 0 auto", borderRadius: 7, background: `linear-gradient(135deg,${C.accent},${C.blue})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>⚽</div>
-            <div style={{ fontWeight: 800, fontSize: 13.5, letterSpacing: "-0.2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>ValueBet 精算系统</div>
+            <div style={{ width: 28, height: 28, flex: "0 0 auto", borderRadius: 7, background: `linear-gradient(135deg,${C.accent},${C.blue})`, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>
+              <Icon.ball width={16} height={16} />
+            </div>
+            <div style={{ fontWeight: 800, fontSize: 13.5, letterSpacing: "-0.2px", color: HDR.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>ValueBet 精算系统</div>
           </div>
           <div style={{ display: "flex", gap: 4, flex: "0 0 auto" }}>
             <IconBtn onClick={() => setShowDisclaimer(true)} title="免责声明">
@@ -571,15 +617,16 @@ export default function App() {
           </div>
         </div>
 
-        {/* 标签栏：emoji 换成纯文字——emoji 当图标在不同系统下渲染差异大，
-            给别人用会显得随意；横向滚动代替换行，六个标签固定一行，不占
-            第二行空间。className="hscroll" 的滚动条隐藏规则见下面全局 style。 */}
-        <div className="hscroll" style={{ display: "flex", gap: 4, marginTop: 9, overflowX: "auto" }}>
+        {/* 标签栏：下划线样式（活动项底部一条 2px 强调色），不再是深色版本的
+            药丸背景——白底上用下划线比实心色块更轻。横向滚动代替换行，
+            六个标签固定一行，不占第二行空间。className="hscroll" 的滚动条
+            隐藏规则见下面全局 style。 */}
+        <div className="hscroll" style={{ display: "flex", gap: 2, marginTop: 9, overflowX: "auto", borderBottom: `1px solid ${HDR.border}` }}>
           {[["upcoming", "预测"], ["parlay", "串关推荐"], ["backtest", "回测"], ["bets", "虚拟盘"], ["realbets", "实盘"], ["chart", "走势"]].map(([k, l]) => (
             <button
               key={k}
               onClick={() => setTab(k)}
-              style={{ padding: "5px 11px", borderRadius: 7, border: `1px solid ${tab === k ? C.accent : C.border}`, background: tab === k ? C.accentDim : "transparent", color: tab === k ? C.accent : C.textDim, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", flex: "0 0 auto" }}
+              style={{ padding: "7px 11px", border: "none", borderBottom: `2px solid ${tab === k ? C.accent : "transparent"}`, background: "transparent", color: tab === k ? C.accent : HDR.textDim, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", flex: "0 0 auto" }}
             >
               {l}
             </button>
@@ -587,17 +634,17 @@ export default function App() {
         </div>
 
         {competitions.length > 0 && (
-          <div className="hscroll" style={{ display: "flex", gap: 4, marginTop: 7, overflowX: "auto", alignItems: "center" }}>
-            <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, marginRight: 2, flex: "0 0 auto" }}>赛事</span>
+          <div className="hscroll" style={{ display: "flex", gap: 4, marginTop: 9, overflowX: "auto", alignItems: "center" }}>
+            <span style={{ fontSize: 10, color: HDR.textDim, fontWeight: 700, marginRight: 2, flex: "0 0 auto" }}>赛事</span>
             {[{ id: null, name_zh: "全部" }, ...competitions].map(c => {
               const on = comp === c.id;
               const n = c.id == null ? matches.length : matches.filter(m => m.competition_id === c.id).length;
               return (
                 <button key={String(c.id)} onClick={() => setComp(c.id)}
-                  style={{ padding: "4px 9px", borderRadius: 6, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", flex: "0 0 auto",
-                           border: `1px solid ${on ? C.blue : C.border}`,
-                           background: on ? C.blueDim : "transparent",
-                           color: on ? C.blue : C.textDim,
+                  style={{ padding: "4px 9px", borderRadius: 999, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", flex: "0 0 auto",
+                           border: `1px solid ${on ? C.accent : HDR.border}`,
+                           background: on ? C.accentDim : "transparent",
+                           color: on ? C.accent : HDR.textDim,
                            fontVariantNumeric: "tabular-nums" }}>
                   {c.name_zh}<span style={{ opacity: 0.55, marginLeft: 4 }}>{n}</span>
                 </button>
@@ -642,20 +689,20 @@ export default function App() {
         // 数字里会把某个联赛的亏损用另一个联赛的盈利盖掉。
         const { pnl: realPnl } = realPnlRoi(shownRealBets, realParlays);
         return (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", background: C.border, gap: 1 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", background: HDR.border, gap: 1 }}>
           {[
             { v: `${backtest.correct}/${backtest.total}`, l: `${backtestLabel} · 预测正确`, c: C.blue },
-            { v: pct(backtest.accuracy), l: `${backtestLabel} · 准确率`, c: backtest.accuracy > 0.6 ? C.accent : C.gold },
+            { v: pct(backtest.accuracy), l: `${backtestLabel} · 准确率`, c: backtest.accuracy > 0.6 ? C.accent : HDR.gold },
             { v: backtest.avg_rps?.toFixed(3), l: `${backtestLabel} · 平均RPS`, c: C.accent },
-            { v: shownBets.length + virtualParlays.length, l: "虚拟下注", c: C.text },
-            { v: shownRealBets.length + realParlays.length, l: "实盘下注", c: C.purple },
-            { v: Math.round(pendingStake).toLocaleString(), l: "投注金额", c: C.gold },
+            { v: shownBets.length + virtualParlays.length, l: "虚拟下注", c: HDR.text },
+            { v: shownRealBets.length + realParlays.length, l: "实盘下注", c: HDR.purple },
+            { v: Math.round(pendingStake).toLocaleString(), l: "投注金额", c: HDR.gold },
             { v: Math.round(turnover).toLocaleString(), l: "累计流水", c: C.blue },
             { v: fnum(realPnl), l: "实盘盈亏", c: realPnl >= 0 ? C.accent : C.red },
           ].map(({ v, l, c }) => (
-            <div key={l} style={{ background: C.surface, padding: "9px 8px", textAlign: "center" }}>
-              <div style={{ fontSize: 16, fontWeight: 900, color: c, lineHeight: 1 }}>{v}</div>
-              <div style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.4px", marginTop: 3 }}>{l}</div>
+            <div key={l} style={{ background: HDR.bg, padding: "9px 8px", textAlign: "center" }}>
+              <div style={{ fontSize: 16, fontWeight: 900, color: c, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+              <div style={{ fontSize: 9, color: HDR.textDim, textTransform: "uppercase", letterSpacing: "0.4px", marginTop: 3 }}>{l}</div>
             </div>
           ))}
         </div>
@@ -728,7 +775,7 @@ export default function App() {
                             <span style={{ textAlign: "center", color: p.prob_away > p.prob_home && p.prob_away > p.prob_draw ? C.accent : C.textDim }}>{pct(p.prob_away)}</span>
                             <span style={{ textAlign: "center", fontWeight: 700 }}>{m.score1}-{m.score2}</span>
                             <span style={{ textAlign: "center", color: C.blue }}>{p.rps != null ? p.rps.toFixed(3) : "—"}</span>
-                            <span style={{ textAlign: "center" }}>{p.is_correct ? "✅" : "❌"}</span>
+                            <span style={{ textAlign: "center", fontWeight: 700, color: p.is_correct ? C.accent : C.red }}>{p.is_correct ? "✓" : "✕"}</span>
                           </div>
                         );
                       })}
@@ -759,7 +806,7 @@ export default function App() {
               <Stat label="" val="" color={C.textDim} />
               <Stat label="" val="" color={C.textDim} />
             </div>
-            {shownBets.length === 0 && <Empty text="还没有虚拟下注。去「预测」页输入赔率，点「🎲 虚拟」。" />}
+            {shownBets.length === 0 && <Empty text="还没有虚拟下注。去「预测」页输入赔率，点「虚拟」。" />}
             {shownBets.length > 0 && (
               <div style={{ background: C.surface, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
                 <div style={{ display: "grid", gridTemplateColumns: "64px 1fr 60px 52px 52px 52px 60px 40px 44px", padding: "7px 12px", background: C.muted, fontSize: 9, color: C.textDim, fontWeight: 700, textTransform: "uppercase", gap: 3 }}>
@@ -774,7 +821,7 @@ export default function App() {
                     <span>{b.stake}</span>
                     <span style={{ color: evc(b.ev_at_bet || 0) }}>{fev(b.ev_at_bet)}</span>
                     <span style={{ fontWeight: 700, color: (b.pnl || 0) > 0 ? C.accent : (b.pnl || 0) < 0 ? C.red : C.textDim }}>{b.pnl != null ? fnum(b.pnl) : "待定"}</span>
-                    <span>{b.result === "win" ? "✅" : b.result === "loss" ? "❌" : "⏳"}</span>
+                    <span style={{ fontWeight: 700, color: b.result === "win" ? C.accent : b.result === "loss" ? C.red : C.gold }}>{b.result === "win" ? "✓" : b.result === "loss" ? "✕" : "…"}</span>
                     {/* 只有待结算的能取消——已结算的删了会悄悄改掉历史战绩，
                         后端本来就拒绝，这里提前不给按钮，省得点了才看到报错 */}
                     <span>
@@ -851,7 +898,9 @@ function LoginScreen({ onSignedIn }) {
               border: `1px solid ${C.border}`, borderRadius: 12, padding: 22 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 4 }}>
           <div style={{ width: 30, height: 30, borderRadius: 8, background: `linear-gradient(135deg,${C.accent},${C.blue})`,
-                        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>⚽</div>
+                        display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>
+            <Icon.ball width={17} height={17} />
+          </div>
           <div style={{ fontSize: 17, fontWeight: 800 }}>ValueBet 精算系统</div>
         </div>
         <div style={{ fontSize: 11, color: C.textDim, marginBottom: 16 }}>
@@ -913,18 +962,18 @@ function StatusBanner({ status, updating, onUpdateNow, refreshing, refreshFailed
       {(refreshing || refreshFailed) && (
         <span style={{ color: refreshFailed ? C.red : C.textDim }}>
           {refreshFailed
-            ? "⚠ 后台更新失败，显示的是上次的数据"
-            : "⟳ 显示的是上次的数据，正在后台更新…"}
+            ? "后台更新失败，显示的是上次的数据"
+            : "显示的是上次的数据，正在后台更新…"}
         </span>
       )}
       <span>
         {isFirstRun ? (
-          <>{isAuthEnabled ? "☁️ 云端运行中" : "🖥️ 本地运行中"} · 首次抓取数据中，几秒后自动刷新...</>
+          <>{isAuthEnabled ? "云端运行中" : "本地运行中"} · 首次抓取数据中，几秒后自动刷新...</>
         ) : (
           <>
-            {isAuthEnabled ? "☁️ 云端运行中" : "🖥️ 本地运行中"} · 上次更新 {fdatetime(status.last_update)}
+            {isAuthEnabled ? "云端运行中" : "本地运行中"} · 上次更新 {fdatetime(status.last_update)}
             {status.last_severity === "error" && <span style={{ color: C.red }}> · 更新失败: {status.last_detail}</span>}
-            {status.last_severity === "warning" && <span style={{ color: C.gold }}> · ⚠ {status.last_status_label}{status.last_detail ? `：${status.last_detail}` : ""}</span>}
+            {status.last_severity === "warning" && <span style={{ color: C.gold }}> · {status.last_status_label}{status.last_detail ? `：${status.last_detail}` : ""}</span>}
           </>
         )}
       </span>
@@ -949,7 +998,7 @@ function SettingsPanel({ settings, onSave, onClose }) {
     <div style={{ background: C.purpleDim, borderBottom: `1px solid ${C.purple}44`, padding: "14px 16px" }}>
       <div style={{ maxWidth: 960, margin: "0 auto" }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.purple, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span>⚙ 资金与凯利设置</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Icon.gear width={13} height={13} />资金与凯利设置</span>
           <span onClick={onClose} style={{ cursor: "pointer", color: C.textDim, fontSize: 16 }}>✕</span>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10 }}>
@@ -1014,7 +1063,7 @@ function DisclaimerModal({ onClose }) {
       <div onClick={e => e.stopPropagation()}
            style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, maxWidth: 560, width: "100%", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
-          <div style={{ fontWeight: 800, fontSize: 15 }}>⚠️ 免责声明</div>
+          <div style={{ fontWeight: 800, fontSize: 15, display: "flex", alignItems: "center", gap: 7 }}><Icon.warn width={14} height={14} />免责声明</div>
           <span onClick={onClose} style={{ cursor: "pointer", color: C.textDim, fontSize: 18, lineHeight: 1 }}>✕</span>
         </div>
 
@@ -1284,32 +1333,32 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
           { label: "平局", prob: mdl.prob_draw, xg: null },
           { label: t2, prob: mdl.prob_away, xg: mdl.xg_away },
         ];
-        // 三段式色条按名次上色（第一/第二/第三，不是固定按位置），
-        // 用下标排名而不是数值比较——数值比较在真正打平时会让两段同时
-        // 判定成"最大"，色条上出现两段强调色，跟上面数字变色的判断
-        // (item.prob === maxP) 也会不一致。设计原型阶段筛出过这个问题：
-        // 客队占优时若色条固定给主队上色，会出现"数字标客队、色条标主队"
-        // 的自相矛盾，10 场真实数据逐场核对过才改成现在这个按名次的版本。
+        // 每栏一条各自的进度条，宽度是"这个结果自己的概率占这一栏的比例"
+        // （0-100%），不是三栏共享一条按比例分段的通栏色条。
+        //
+        // 之前是通栏版本：一条 flex 容器横跨三栏，每段宽度=各自概率，三段
+        // 概率加总接近 100% 所以三段能拼成一条完整的条，但分段的边界是
+        // 按"概率累积到多少"决定的，跟上面三栏"各占 1/3 等宽"的边界完全
+        // 是两套坐标系——只要三个概率不是刚好 33.3/33.3/33.3，色条的分段线
+        // 就不会落在栏与栏的分界线上，平局那一段经常悬空对不上自己那一栏。
+        // 现在改回每栏自己的条，条的宽度只跟自己栏内的百分比有关，
+        // 天然跟上面的数字对齐。
         const order = [0, 1, 2].sort((a, b) => items[b].prob - items[a].prob);
         const rank = []; order.forEach((idx, pos) => { rank[idx] = pos; });
         const tone = idx => rank[idx] === 0 ? C.accent : rank[idx] === 1 ? C.textDim : C.muted;
         return (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 1, background: C.border }}>
-              {items.map((item, idx) => (
-                <div key={idx} style={{ background: C.card, padding: "9px 12px", minWidth: 0 }}>
-                  <div style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.label}</div>
-                  <div style={{ fontSize: 19, fontWeight: 900, color: item.prob === maxP ? C.accent : C.text, fontVariantNumeric: "tabular-nums" }}>{pct(item.prob)}</div>
-                  {item.xg !== null && <div style={{ fontSize: 10, color: C.textDim, marginTop: 1, fontVariantNumeric: "tabular-nums" }}>xG {item.xg}</div>}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 1, background: C.border }}>
+            {items.map((item, idx) => (
+              <div key={idx} style={{ background: C.card, padding: "9px 12px", minWidth: 0 }}>
+                <div style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.label}</div>
+                <div style={{ fontSize: 19, fontWeight: 900, color: item.prob === maxP ? C.accent : C.text, fontVariantNumeric: "tabular-nums" }}>{pct(item.prob)}</div>
+                {item.xg !== null && <div style={{ fontSize: 10, color: C.textDim, marginTop: 1, fontVariantNumeric: "tabular-nums" }}>xG {item.xg}</div>}
+                <div style={{ marginTop: 5, height: 3, background: C.border, borderRadius: 2 }}>
+                  <div style={{ width: pct(item.prob), height: "100%", background: tone(idx), borderRadius: 2 }} />
                 </div>
-              ))}
-            </div>
-            <div style={{ display: "flex", height: 3, background: C.border }}>
-              {items.map((item, idx) => (
-                <div key={idx} style={{ width: pct(item.prob), height: "100%", background: tone(idx) }} />
-              ))}
-            </div>
-          </>
+              </div>
+            ))}
+          </div>
         );
       })()}
 
@@ -1349,15 +1398,15 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
                     ) : (
                       <div style={{ fontSize: 11, marginTop: 3, color: C.textDim }}>不建议下注</div>
                     )}
-                    {item.evVal > threshold && <div style={{ fontSize: 10, fontWeight: 800, color: C.accent, marginTop: 3 }}>⚡ VALUE</div>}
+                    {item.evVal > threshold && <div style={{ fontSize: 10, fontWeight: 800, color: C.accent, marginTop: 3 }}>VALUE</div>}
                     <div style={{ display: "flex", gap: 4, marginTop: 7 }}>
                       <button onClick={() => doVBet(item.key)} disabled={saving === "v" + item.key || saved === "v" + item.key}
                         style={{ flex: 1, padding: "10px 5px", borderRadius: 6, border: "none", background: item.evVal > 0 ? C.blue : C.muted, color: item.evVal > 0 ? "#fff" : C.textDim, fontWeight: 700, fontSize: 12 }}>
-                        {saved === "v" + item.key ? "✅" : saving === "v" + item.key ? "..." : "🎲 虚拟"}
+                        {saved === "v" + item.key ? "✓" : saving === "v" + item.key ? "..." : "虚拟"}
                       </button>
                       <button onClick={() => setShowRF(showRF === item.key ? null : item.key)}
                         style={{ flex: 1, padding: "10px 5px", borderRadius: 6, border: `1px solid ${C.purple}`, background: showRF === item.key ? C.purple : "transparent", color: showRF === item.key ? "#0a0510" : C.purple, fontWeight: 700, fontSize: 12 }}>
-                        💵 实盘
+                        实盘
                       </button>
                     </div>
                     {showRF === item.key && (
@@ -1376,7 +1425,7 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
                           style={{ width: "100%", background: C.card, border: `1px solid ${C.purple}66`, borderRadius: 6, padding: "9px 10px", color: C.text, fontSize: 16, fontWeight: 700 }} />
                         <button onClick={() => doRBet(item.key)} disabled={saving === "r" + item.key || saved === "r" + item.key}
                           style={{ width: "100%", marginTop: 6, padding: "11px", borderRadius: 6, border: "none", background: C.purple, color: "#0a0510", fontWeight: 800, fontSize: 13 }}>
-                          {saved === "r" + item.key ? "✅ 已登记" : saving === "r" + item.key ? "..." : "确认登记实盘"}
+                          {saved === "r" + item.key ? "✓ 已登记" : saving === "r" + item.key ? "..." : "确认登记实盘"}
                         </button>
                       </div>
                     )}
@@ -1434,7 +1483,7 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
     <div>
       <SL>实盘记录 · 真实金钱（HKD）· 起始 {(+settings.bankroll_total).toLocaleString()}</SL>
       <div style={{ background: C.purpleDim, border: `1px solid ${C.purple}44`, borderRadius: 8, padding: "9px 13px", fontSize: 11, color: C.purple, marginBottom: 12 }}>
-        💡 在「预测」页点「💵 实盘」按钮记录你真实下的注。比赛结束后系统每12小时自动结算盈亏。
+        在「预测」页点「实盘」按钮记录你真实下的注。比赛结束后系统每12小时自动结算盈亏。
       </div>
 
       <WithdrawSection bankroll={bankroll} withdrawals={withdrawals} onRefresh={onRefresh} />
@@ -1445,7 +1494,7 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
       {parlays.length > 0 && (
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: C.textDim, marginBottom: 7, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
-            <span style={{ fontWeight: 700, color: C.text }}>🎯 串关注单 {parlays.length} 注</span>
+            <span style={{ fontWeight: 700, color: C.text }}>串关注单 {parlays.length} 注</span>
             <span>本金合计 {Math.round(pStake).toLocaleString()} · 已结算盈亏
               <strong style={{ color: pPnl >= 0 ? C.accent : C.red, marginLeft: 4 }}>{fnum(pPnl)}</strong>
             </span>
@@ -1503,7 +1552,7 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
         <Stat label="实盘ROI" val={realRoi == null ? "—" : realRoi.toFixed(1) + "%"} color={(realRoi || 0) >= 0 ? C.accent : C.red} />
         <Stat label="胜率" val={settledCount ? pct(wins / settledCount) : "—"} color={C.blue} />
       </div>
-      {realBets.length === 0 && <Empty text="还没有实盘记录。去「预测」页输入赔率，点击「💵 实盘」按钮。" />}
+      {realBets.length === 0 && <Empty text="还没有实盘记录。去「预测」页输入赔率，点击「实盘」按钮。" />}
       {realBets.map(b => {
         const won = b.result === "win";
         return (
@@ -1517,7 +1566,7 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
             <div style={{ textAlign: "right" }}>
               <div style={{ fontWeight: 700, fontSize: 13 }}>{b.stake_real.toLocaleString()} {b.currency}</div>
               <div style={{ fontSize: 11, fontWeight: 700, color: b.result === "pending" ? C.gold : won ? C.accent : C.red, display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
-                {b.result === "pending" ? "⏳ 待结算" : won ? `✅ +${(b.pnl_real || 0).toFixed(0)}` : `❌ ${(b.pnl_real || 0).toFixed(0)}`}
+                {b.result === "pending" ? "待结算" : won ? `+${(b.pnl_real || 0).toFixed(0)}` : `${(b.pnl_real || 0).toFixed(0)}`}
                 {b.result === "pending" && onCancel && (
                   <button onClick={() => onCancel(`/real-bets/${b.id}`, "实盘下注")}
                     disabled={cancelling === `/real-bets/${b.id}`}
@@ -1593,7 +1642,7 @@ function WithdrawSection({ bankroll, withdrawals, onRefresh }) {
         </div>
         <button onClick={() => setOpen(o => !o)}
           style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: C.purple, color: "#0a0510", fontWeight: 800, fontSize: 13 }}>
-          {open ? "取消" : "💸 提款"}
+          {open ? "取消" : "提款"}
         </button>
       </div>
 
@@ -1652,6 +1701,19 @@ function ChartTab({ bankroll, settings }) {
   // 之前是两个独立数组分别喂给两条 Line，配 category 类型的 X 轴时
   // recharts 会因两边日期集合不同而画歪——这是曲线之前有问题的原因之一。
   const series = bankroll.series || [];
+  const last = series[series.length - 1];
+  const vRows = dailyPnl(series, "virtual");
+  const rRows = dailyPnl(series, "real");
+  // 两条线的按天记录合并成一份按日期排序的列表，一行里同时看到虚拟盘/
+  // 实盘那天各自的变化，而不是两张互相对不上日期的表。
+  const byDate = new Map();
+  for (const r of vRows) byDate.set(r.date, { date: r.date, v: r.delta, r: 0 });
+  for (const r of rRows) {
+    const row = byDate.get(r.date) || { date: r.date, v: 0, r: 0 };
+    row.r = r.delta;
+    byDate.set(r.date, row);
+  }
+  const dailyRows = [...byDate.values()].sort((a, b) => (a.date < b.date ? 1 : -1));
 
   return (
     <div>
@@ -1664,21 +1726,59 @@ function ChartTab({ bankroll, settings }) {
         {series.length <= 1 ? (
           <Empty text="还没有已结算注单，下注后这里显示走势" />
         ) : (
-          <div style={{ height: 280 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={series}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="date" type="category" allowDuplicatedCategory={false} tick={{ fontSize: 10, fill: C.textDim }} tickFormatter={d => fdt(d)} />
-                <YAxis tick={{ fontSize: 10, fill: C.textDim }} domain={["auto", "auto"]} />
-                <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }} labelFormatter={fdt} formatter={v => [`${Math.round(v).toLocaleString()}`, "资金"]} />
-                <ReferenceLine y={+settings.bankroll_total} stroke={C.gold} strokeDasharray="4 4" label={{ value: "起始", fill: C.gold, fontSize: 10 }} />
-                <Line type="monotone" dataKey="virtual" name="虚拟盘" stroke={C.accent} strokeWidth={2} dot={{ fill: C.accent, r: 3 }} />
-                <Line type="monotone" dataKey="real" name="实盘" stroke={C.purple} strokeWidth={2} dot={{ fill: C.purple, r: 3 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+          <>
+            <div style={{ height: 280 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={series}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                  <XAxis dataKey="date" type="category" allowDuplicatedCategory={false} tick={{ fontSize: 10, fill: C.textDim }} tickFormatter={d => fdt(d)} />
+                  <YAxis tick={{ fontSize: 10, fill: C.textDim }} domain={["auto", "auto"]} />
+                  <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }} labelFormatter={fdt} formatter={v => [`${Math.round(v).toLocaleString()}`, "资金"]} />
+                  <ReferenceLine y={+settings.bankroll_total} stroke={C.gold} strokeDasharray="4 4" label={{ value: "起始", fill: C.gold, fontSize: 10 }} />
+                  <Line type="monotone" dataKey="virtual" name="虚拟盘" stroke={C.accent} strokeWidth={2} dot={{ fill: C.accent, r: 3 }} />
+                  <Line type="monotone" dataKey="real" name="实盘" stroke={C.purple} strokeWidth={2} dot={{ fill: C.purple, r: 3 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 14 }}>
+              <div style={{ background: C.surface, borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.4px" }}>虚拟盘当前</div>
+                <div style={{ fontSize: 20, fontWeight: 900, color: C.accent, marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{Math.round(last.virtual).toLocaleString()}</div>
+              </div>
+              <div style={{ background: C.surface, borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.4px" }}>实盘当前</div>
+                <div style={{ fontSize: 20, fontWeight: 900, color: C.purple, marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{Math.round(last.real).toLocaleString()}</div>
+              </div>
+            </div>
+          </>
         )}
       </div>
+
+      {/* 哪天赚了/亏了多少——同一天可能有好几笔结算，这里已经按天合并成
+          一个净值。日期之间的变化是"上一个有数据的日子"到"这一天"，
+          不是严格意义上的自然日相邻，中间空档的日子（没有任何注单结算）
+          不会显示成 0，本来就没有发生过的事没必要占一行。 */}
+      {dailyRows.length > 0 && (
+        <div>
+          <SL>逐日盈亏</SL>
+          <div style={{ background: C.surface, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", padding: "6px 12px", fontSize: 9, color: C.textDim, textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>
+              <span></span><span style={{ textAlign: "right" }}>虚拟盘</span><span style={{ textAlign: "right" }}>实盘</span>
+            </div>
+            {dailyRows.map(row => (
+              <div key={row.date} style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", padding: "8px 12px", borderBottom: `1px solid ${C.border}`, alignItems: "center", fontSize: 12 }}>
+                <span style={{ color: C.textDim }}>{fdt(row.date)}</span>
+                <span style={{ textAlign: "right", fontWeight: 700, color: row.v > 0 ? C.accent : row.v < 0 ? C.red : C.muted, fontVariantNumeric: "tabular-nums" }}>
+                  {row.v !== 0 ? fnum(row.v) : "—"}
+                </span>
+                <span style={{ textAlign: "right", fontWeight: 700, color: row.r > 0 ? C.purple : row.r < 0 ? C.red : C.muted, fontVariantNumeric: "tabular-nums" }}>
+                  {row.r !== 0 ? fnum(row.r) : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1816,7 +1916,7 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
       <SL>串关推荐 · 只支持独立比赛的1X2组合，{minLegs}-{maxLegs}腿</SL>
 
       <div style={{ background: C.goldDim, border: `1px solid ${C.gold}44`, borderRadius: 8, padding: "10px 13px", fontSize: 11, color: C.gold, marginBottom: 12, lineHeight: 1.6 }}>
-        💡 只有单腿本身是正EV的选项才会进入候选池——赔率再高，如果模型概率算下来是负EV，
+        只有单腿本身是正EV的选项才会进入候选池——赔率再高，如果模型概率算下来是负EV，
         不会被推荐。热门强队的赔率经常被市场压得低于其真实胜率对应的公平赔率，串起来只会让负EV被放大，
         不会凭空创造价值。
       </div>
@@ -1883,7 +1983,7 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
 
       <button onClick={generate} disabled={loading || selectedIds.length < 2}
         style={{ width: "100%", padding: "11px", borderRadius: 8, border: "none", background: selectedIds.length >= 2 ? C.accent : C.muted, color: selectedIds.length >= 2 ? C.bg : C.textDim, fontWeight: 800, fontSize: 13, marginTop: 8, marginBottom: 14 }}>
-        {loading ? "搜索中..." : `🎯 生成推荐组合（已选${selectedIds.length}场）`}
+        {loading ? "搜索中..." : `生成推荐组合（已选${selectedIds.length}场）`}
       </button>
 
       {error && (
@@ -1933,13 +2033,13 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
                   disabled={recording === `virtual-${i}` || recorded === `virtual-${i}`}
                   style={{ flex: 1, padding: "9px 4px", borderRadius: 6, border: "none", background: C.blue, color: "#fff", fontWeight: 700, fontSize: 12 }}
                 >
-                  {recorded === `virtual-${i}` ? "✅ 已记录" : recording === `virtual-${i}` ? "..." : `🎲 记虚拟盘（${Math.round(combo.kelly_amount || 0).toLocaleString()}）`}
+                  {recorded === `virtual-${i}` ? "✓ 已记录" : recording === `virtual-${i}` ? "..." : `记虚拟盘（${Math.round(combo.kelly_amount || 0).toLocaleString()}）`}
                 </button>
                 <button
                   onClick={() => setShowRealForm(showRealForm === i ? null : i)}
                   style={{ flex: 1, padding: "9px 4px", borderRadius: 6, border: `1px solid ${C.purple}`, background: showRealForm === i ? C.purple : "transparent", color: showRealForm === i ? "#0a0510" : C.purple, fontWeight: 700, fontSize: 12 }}
                 >
-                  💵 记实盘
+                  记实盘
                 </button>
               </div>
 
@@ -1967,7 +2067,7 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
                       disabled={recording === `real-${i}` || recorded === `real-${i}`}
                       style={{ padding: "9px 14px", borderRadius: 6, border: "none", background: C.purple, color: "#0a0510", fontWeight: 800, fontSize: 12, whiteSpace: "nowrap" }}
                     >
-                      {recorded === `real-${i}` ? "✅" : recording === `real-${i}` ? "..." : "确认"}
+                      {recorded === `real-${i}` ? "✓" : recording === `real-${i}` ? "..." : "确认"}
                     </button>
                   </div>
                 </div>
@@ -2021,7 +2121,6 @@ function NoFixtures({ played, stale = [] }) {
   const days = Math.round((Date.now() - new Date(last.date + "T12:00:00")) / 86400000);
   return (
     <div style={{ textAlign: "center", padding: "34px 20px", color: C.textDim, lineHeight: 1.8 }}>
-      <div style={{ fontSize: 28, opacity: 0.35, marginBottom: 10 }}>🌱</div>
       <div style={{ color: C.text, fontWeight: 700, marginBottom: 6 }}>休赛期，暂时没有比赛</div>
       <div style={{ fontSize: 12, maxWidth: 420, margin: "0 auto" }}>
         库里已有 <strong style={{ color: C.text }}>{played.length}</strong> 场完赛数据，
@@ -2053,7 +2152,6 @@ function NoPredictions({ count, status, updating, onUpdateNow }) {
   const sev = status?.last_severity;
   return (
     <div style={{ textAlign: "center", padding: "30px 20px", color: C.textDim, lineHeight: 1.8 }}>
-      <div style={{ fontSize: 28, opacity: 0.35, marginBottom: 10 }}>⏳</div>
       <div style={{ color: C.text, fontWeight: 700, marginBottom: 6 }}>赛程已就位，模型还没算出预测</div>
       <div style={{ fontSize: 12, maxWidth: 440, margin: "0 auto" }}>
         库里有 <strong style={{ color: C.text }}>{count}</strong> 场即将进行的比赛，但它们还没有对应的预测，
@@ -2082,7 +2180,6 @@ function NoPredictions({ count, status, updating, onUpdateNow }) {
 function Empty({ text }) {
   return (
     <div style={{ textAlign: "center", padding: "36px 20px", color: C.textDim }}>
-      <div style={{ fontSize: 28, opacity: 0.3, marginBottom: 10 }}>📭</div>
       <div>{text}</div>
     </div>
   );
