@@ -332,7 +332,62 @@ def list_matches(status_filter: Optional[str] = None, competition_id: Optional[i
     # 显示名的取法跟 /api/backtest-summary 保持一致：优先中文名，没有才退回英文，
     # 两处不一致的话前端按赛事分组时会出现「英超」和「English Premier League」
     # 两个看起来不同、其实是同一个赛事的分组。
-    comp_names = {c.id: (c.name_zh or c.name) for c in db.query(Competition).all()}
+    comps_all = db.query(Competition).all()
+    comp_names = {c.id: (c.name_zh or c.name) for c in comps_all}
+
+    # ── 这条预测背后到底有多少真实数据 ──────────────────────────
+    #
+    # 起因：联赛杯这类淘汰赛，大量球队一季只踢 1-2 场，样本量够不上单独
+    # 拟合 MLE 参数的门槛（≥6场），dixon_coles 查不到就静默退回
+    # FALLBACK_ATTACK/DEFENSE = (0,0)「联赛平均水平」。问题不在于退回本身，
+    # 而在于**界面上完全看不出区别**——一场两队都没有任何数据的比赛，
+    # 照样显示「53.8% / 20.5% / 25.8%」这种看起来跟真实预测一模一样的数字。
+    #
+    # 拿真实数据量过一遍联赛杯首轮 35 场（2026-08 实测）：
+    #   双方都有 MLE 拟合参数        7 场
+    #   至少一方只有贝叶斯后验       26 场（6-10 场观测，偏薄但有真实依据）
+    #   至少一方零信息(flat prior)   2 场（Barnet / Oldham Athletic，
+    #                                 2022-2024 压根没参加过这项赛事）
+    #
+    # 所以分三档暴露给前端，让"这个数字有多可信"变成可见的：
+    #   full —— 双方都有 MLE 拟合参数
+    #   thin —— 至少一方只有贝叶斯后验（先验是联赛平均，靠少量真实比赛修正过）
+    #   none —— 至少一方两者都没有，纯 flat prior，这个数字没有意义
+    #
+    # 刻意不在这里隐藏比赛：赛程本身是真的，用户可能就是想看这场几点踢、
+    # 自己填赔率。藏掉反而会让人以为系统漏抓了。标注出来、把判断交回给用户，
+    # 跟项目「精算式的诚实」的基调一致。
+    from .model import load_params, scope_for_competition
+    comp_scope = {c.id: scope_for_competition(c.code) for c in comps_all}
+    _mle_cache = {}
+
+    def _mle_known(scope: str):
+        if scope not in _mle_cache:
+            try:
+                _mle_cache[scope] = set(load_params(scope)["_index"].keys())
+            except Exception:
+                _mle_cache[scope] = set()
+        return _mle_cache[scope]
+
+    bayes_known = {
+        (r.team_name, r.competition_id)
+        for r in db.query(BayesianTeamStateRow.team_name,
+                          BayesianTeamStateRow.competition_id).all()
+    }
+
+    def _backing(m) -> str:
+        known = _mle_known(comp_scope.get(m.competition_id, "international"))
+        tiers = []
+        for t in (m.team1, m.team2):
+            if (t or "").strip().lower() in known:
+                tiers.append("mle")
+            elif (t, m.competition_id) in bayes_known:
+                tiers.append("bayes")
+            else:
+                tiers.append("none")
+        if "none" in tiers:
+            return "none"
+        return "full" if all(x == "mle" for x in tiers) else "thin"
 
     # 预测和赔率也必须批量取。上面那段注释为赛事名避开了 N+1，紧接着的循环
     # 却又犯了两次同样的错：每场比赛查一次 Prediction、再查一次 Odds，
@@ -369,7 +424,8 @@ def list_matches(status_filter: Optional[str] = None, competition_id: Optional[i
             "score1": m.score1, "score2": m.score2,
             "time_utc": m.time_utc,
             "round": m.round, "grp": m.grp, "ground": m.ground, "status": m.status,
-            "prediction": _pred_dict(pred) if pred else None,
+            "prediction": (dict(_pred_dict(pred), data_backing=_backing(m))
+                           if pred else None),
             "latest_odds": {
                 "odds_home": latest_odds.odds_home, "odds_draw": latest_odds.odds_draw, "odds_away": latest_odds.odds_away,
             } if latest_odds else None,

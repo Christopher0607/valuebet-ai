@@ -1329,8 +1329,10 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
 
   return (
     <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
-      <div onClick={() => setOpen(o => !o)} style={{ padding: "11px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", userSelect: "none" }}>
-        <div>
+      <div onClick={() => setOpen(o => !o)} style={{ padding: "11px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, cursor: "pointer", userSelect: "none" }}>
+        {/* minWidth:0 —— flex 子项默认 min-width:auto，内容再长也不肯收缩，
+            于是这一栏会把右边的 ELO 挤出去、徽标被从中间断成两行。 */}
+        <div style={{ minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 13 }}>{t1} <span style={{ color: C.textDim, fontWeight: 400, fontSize: 12 }}>vs</span> {t2}</div>
           <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>
             {match.competition_name && <span style={{ color: C.blue, fontWeight: 700 }}>{match.competition_name} · </span>}
@@ -1338,11 +1340,28 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
             {provisional && (
               <span title="上游数据源还没排这一轮的具体日程，整轮先挂在一个名义日期上"
                     style={{ marginLeft: 6, background: C.goldDim, color: C.gold, borderRadius: 4,
-                             padding: "1px 5px", fontSize: 9, fontWeight: 700 }}>日期暂定</span>
+                             padding: "1px 5px", fontSize: 9, fontWeight: 700,
+                             whiteSpace: "nowrap", display: "inline-block" }}>日期暂定</span>
+            )}
+            {/* 这条预测背后有多少真实数据。联赛杯这类淘汰赛里大量球队一季
+                只踢 1-2 场，够不上单独拟合参数的门槛，模型会静默退回"联赛
+                平均水平"——不标出来的话，一个凭空算出来的百分比看起来跟
+                真实预测一模一样。后端算好三档传过来，见 main.py 的 _backing()。*/}
+            {mdl.data_backing === "none" && (
+              <span title="参赛球队在本系统里没有任何历史比赛记录，模型只能用联赛平均水平顶替——下面这三个百分比没有实际依据，不要当成预测使用"
+                    style={{ marginLeft: 6, background: C.redDim, color: C.red, borderRadius: 4,
+                             padding: "1px 5px", fontSize: 9, fontWeight: 700,
+                             whiteSpace: "nowrap", display: "inline-block" }}>无数据支撑</span>
+            )}
+            {mdl.data_backing === "thin" && (
+              <span title="至少一方球队没有足够场次单独拟合参数，只靠少量真实比赛做过贝叶斯修正——有依据但比其他比赛薄，概率的不确定性更大"
+                    style={{ marginLeft: 6, background: C.goldDim, color: C.gold, borderRadius: 4,
+                             padding: "1px 5px", fontSize: 9, fontWeight: 700,
+                             whiteSpace: "nowrap", display: "inline-block" }}>样本偏少</span>
             )}</div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ fontSize: 10, color: C.blue }}>ELO {mdl.elo_home}/{mdl.elo_away}</span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flex: "0 0 auto" }}>
+          <span style={{ fontSize: 10, color: C.blue, whiteSpace: "nowrap" }}>ELO {mdl.elo_home}/{mdl.elo_away}</span>
           <span style={{ color: C.textDim }}>{open ? "▲" : "▼"}</span>
         </div>
       </div>
