@@ -1,0 +1,280 @@
+date,home_team,away_team,home_score,away_score,tournament,neutral
+2022-08-02,Cambridge United,Millwall,1,0,efl_cup,FALSE
+2022-08-09,Shrewsbury,Carlisle,3,2,efl_cup,FALSE
+2022-08-09,Huddersfield,Preston,1,4,efl_cup,FALSE
+2022-08-09,Cardiff,Portsmouth,0,3,efl_cup,FALSE
+2022-08-09,Ipswich,Colchester,0,1,efl_cup,FALSE
+2022-08-09,Bolton,Salford City,5,1,efl_cup,FALSE
+2022-08-09,Norwich,Birmingham,2,2,efl_cup,FALSE
+2022-08-09,AFC Wimbledon,Gillingham,0,2,efl_cup,FALSE
+2022-08-09,Charlton,QPR,1,1,efl_cup,FALSE
+2022-08-09,Fleetwood Town,Wigan,1,0,efl_cup,FALSE
+2022-08-09,Northampton,Wycombe,1,2,efl_cup,FALSE
+2022-08-09,Oxford United,Swansea,2,2,efl_cup,FALSE
+2022-08-09,Rochdale,Burton Albion,2,0,efl_cup,FALSE
+2022-08-09,Walsall,Swindon Town,2,0,efl_cup,FALSE
+2022-08-09,Bradford,Hull City,2,1,efl_cup,FALSE
+2022-08-09,Milton Keynes Dons,Sutton Utd,1,0,efl_cup,FALSE
+2022-08-09,Doncaster,Lincoln,0,3,efl_cup,FALSE
+2022-08-09,Blackpool,Barrow,0,0,efl_cup,FALSE
+2022-08-09,Luton,Newport County,2,3,efl_cup,FALSE
+2022-08-09,Accrington ST,Tranmere,2,2,efl_cup,FALSE
+2022-08-09,Crawley Town,Bristol Rovers,1,0,efl_cup,FALSE
+2022-08-09,Grimsby,Crewe,4,0,efl_cup,FALSE
+2022-08-09,Cheltenham,Exeter City,0,7,efl_cup,FALSE
+2022-08-09,Mansfield Town,Derby,1,2,efl_cup,FALSE
+2022-08-09,Morecambe,Stoke City,0,0,efl_cup,FALSE
+2022-08-09,Forest Green,Leyton Orient,2,0,efl_cup,FALSE
+2022-08-09,Harrogate Town,Stockport County,0,1,efl_cup,FALSE
+2022-08-09,Reading,Stevenage,1,2,efl_cup,FALSE
+2022-08-10,Blackburn,Hartlepool,4,0,efl_cup,FALSE
+2022-08-10,Middlesbrough,Barnsley,0,1,efl_cup,FALSE
+2022-08-10,Sheffield Wednesday,Sunderland,2,0,efl_cup,FALSE
+2022-08-10,Coventry,Bristol City,1,4,efl_cup,FALSE
+2022-08-10,Port Vale,Rotherham,1,2,efl_cup,FALSE
+2022-08-10,Plymouth,Peterborough,0,2,efl_cup,FALSE
+2022-08-11,West Brom,Sheffield Utd,1,0,efl_cup,FALSE
+2022-08-23,Walsall,Charlton,0,1,efl_cup,FALSE
+2022-08-23,Sheffield Wednesday,Rochdale,3,0,efl_cup,FALSE
+2022-08-23,Shrewsbury,Burnley,0,1,efl_cup,FALSE
+2022-08-23,Watford,Milton Keynes Dons,0,2,efl_cup,FALSE
+2022-08-23,Wolves,Preston,2,1,efl_cup,FALSE
+2022-08-23,Bolton,Aston Villa,1,4,efl_cup,FALSE
+2022-08-23,Derby,West Brom,1,0,efl_cup,FALSE
+2022-08-23,Norwich,AFC Bournemouth,2,2,efl_cup,FALSE
+2022-08-23,Rotherham,Morecambe,0,1,efl_cup,FALSE
+2022-08-23,Fleetwood Town,Everton,0,1,efl_cup,FALSE
+2022-08-23,Oxford United,Crystal Palace,0,2,efl_cup,FALSE
+2022-08-23,Bradford,Blackburn,1,2,efl_cup,FALSE
+2022-08-23,Gillingham,Exeter City,0,0,efl_cup,FALSE
+2022-08-23,Colchester,Brentford,0,2,efl_cup,FALSE
+2022-08-23,Crawley Town,Fulham,2,0,efl_cup,FALSE
+2022-08-23,Grimsby,Nottingham Forest,0,3,efl_cup,FALSE
+2022-08-23,Newport County,Portsmouth,3,2,efl_cup,FALSE
+2022-08-23,Stevenage,Peterborough,1,0,efl_cup,FALSE
+2022-08-23,Cambridge United,Southampton,0,3,efl_cup,FALSE
+2022-08-23,Barrow,Lincoln,2,2,efl_cup,FALSE
+2022-08-23,Stockport County,Leicester,0,0,efl_cup,FALSE
+2022-08-24,Leeds,Barnsley,3,1,efl_cup,FALSE
+2022-08-24,Wycombe,Bristol City,1,3,efl_cup,FALSE
+2022-08-24,Forest Green,Brighton,0,3,efl_cup,FALSE
+2022-08-24,Tranmere,Newcastle,1,2,efl_cup,FALSE
+2022-11-08,AFC Bournemouth,Everton,4,1,efl_cup,FALSE
+2022-11-08,Burnley,Crawley Town,3,1,efl_cup,FALSE
+2022-11-08,Leicester,Newport County,3,0,efl_cup,FALSE
+2022-11-08,Brentford,Gillingham,1,1,efl_cup,FALSE
+2022-11-08,Bristol City,Lincoln,1,3,efl_cup,FALSE
+2022-11-08,Milton Keynes Dons,Morecambe,2,0,efl_cup,FALSE
+2022-11-08,Stevenage,Charlton,1,1,efl_cup,FALSE
+2022-11-09,Newcastle,Crystal Palace,0,0,efl_cup,FALSE
+2022-11-09,Wolves,Leeds,1,0,efl_cup,FALSE
+2022-11-09,Southampton,Sheffield Wednesday,1,1,efl_cup,FALSE
+2022-11-09,Arsenal,Brighton,1,3,efl_cup,FALSE
+2022-11-09,West Ham,Blackburn,2,2,efl_cup,FALSE
+2022-11-09,Nottingham Forest,Tottenham,2,0,efl_cup,FALSE
+2022-11-09,Liverpool,Derby,0,0,efl_cup,FALSE
+2022-11-09,Manchester City,Chelsea,2,0,efl_cup,FALSE
+2022-11-10,Manchester United,Aston Villa,4,2,efl_cup,FALSE
+2022-12-20,Newcastle,AFC Bournemouth,1,0,efl_cup,FALSE
+2022-12-20,Wolves,Gillingham,2,0,efl_cup,FALSE
+2022-12-20,Southampton,Lincoln,2,1,efl_cup,FALSE
+2022-12-20,Milton Keynes Dons,Leicester,0,3,efl_cup,FALSE
+2022-12-21,Blackburn,Nottingham Forest,1,4,efl_cup,FALSE
+2022-12-21,Charlton,Brighton,0,0,efl_cup,FALSE
+2022-12-21,Manchester United,Burnley,2,0,efl_cup,FALSE
+2022-12-22,Manchester City,Liverpool,3,2,efl_cup,FALSE
+2023-01-10,Manchester United,Charlton,3,0,efl_cup,FALSE
+2023-01-10,Newcastle,Leicester,2,0,efl_cup,FALSE
+2023-01-11,Nottingham Forest,Wolves,1,1,efl_cup,FALSE
+2023-01-11,Southampton,Manchester City,2,0,efl_cup,FALSE
+2023-01-24,Southampton,Newcastle,0,1,efl_cup,FALSE
+2023-01-25,Nottingham Forest,Manchester United,0,3,efl_cup,FALSE
+2023-01-31,Newcastle,Southampton,2,1,efl_cup,FALSE
+2023-02-01,Manchester United,Nottingham Forest,2,0,efl_cup,FALSE
+2023-02-26,Manchester United,Newcastle,2,0,efl_cup,TRUE
+2023-08-08,Huddersfield,Middlesbrough,2,3,efl_cup,FALSE
+2023-08-08,Swansea,Northampton,3,0,efl_cup,FALSE
+2023-08-08,Peterborough,Swindon Town,1,1,efl_cup,FALSE
+2023-08-08,Newport County,Charlton,3,1,efl_cup,FALSE
+2023-08-08,Mansfield Town,Grimsby,2,0,efl_cup,FALSE
+2023-08-08,Millwall,Reading,0,4,efl_cup,FALSE
+2023-08-08,Preston,Salford City,2,2,efl_cup,FALSE
+2023-08-08,Hull City,Doncaster,1,2,efl_cup,FALSE
+2023-08-08,Blackburn,Walsall,4,3,efl_cup,FALSE
+2023-08-08,Bolton,Barrow,1,0,efl_cup,FALSE
+2023-08-08,Derby,Blackpool,0,2,efl_cup,FALSE
+2023-08-08,Rotherham,Morecambe,1,1,efl_cup,FALSE
+2023-08-08,Sheffield Wednesday,Stockport County,1,1,efl_cup,FALSE
+2023-08-08,Stoke City,West Brom,2,1,efl_cup,FALSE
+2023-08-08,Sunderland,Crewe,1,1,efl_cup,FALSE
+2023-08-08,Barnsley,Tranmere,2,2,efl_cup,FALSE
+2023-08-08,Gillingham,Southampton,3,1,efl_cup,FALSE
+2023-08-08,Milton Keynes Dons,Wycombe,0,2,efl_cup,FALSE
+2023-08-08,Port Vale,Fleetwood Town,3,2,efl_cup,FALSE
+2023-08-08,Plymouth,Leyton Orient,2,0,efl_cup,FALSE
+2023-08-08,Accrington ST,Bradford,1,1,efl_cup,FALSE
+2023-08-08,Exeter City,Crawley Town,2,1,efl_cup,FALSE
+2023-08-08,Stevenage,Watford,1,1,efl_cup,FALSE
+2023-08-08,Cheltenham,Birmingham,0,2,efl_cup,FALSE
+2023-08-08,Notts County,Lincoln,0,2,efl_cup,FALSE
+2023-08-08,Forest Green,Portsmouth,1,3,efl_cup,FALSE
+2023-08-08,Sutton Utd,Cambridge United,2,2,efl_cup,FALSE
+2023-08-08,Harrogate Town,Carlisle,1,0,efl_cup,FALSE
+2023-08-08,Wrexham,Wigan,0,0,efl_cup,FALSE
+2023-08-09,Cardiff,Colchester,2,2,efl_cup,FALSE
+2023-08-09,Bristol City,Oxford United,5,1,efl_cup,FALSE
+2023-08-09,Ipswich,Bristol Rovers,2,0,efl_cup,FALSE
+2023-08-09,Leeds,Shrewsbury,2,1,efl_cup,FALSE
+2023-08-09,AFC Wimbledon,Coventry,2,1,efl_cup,FALSE
+2023-08-09,Burton Albion,Leicester,0,2,efl_cup,FALSE
+2023-08-16,QPR,Norwich,0,1,efl_cup,FALSE
+2023-08-29,Swansea,AFC Bournemouth,2,3,efl_cup,FALSE
+2023-08-29,Fulham,Tottenham,1,1,efl_cup,FALSE
+2023-08-29,Wolves,Blackpool,5,0,efl_cup,FALSE
+2023-08-29,Birmingham,Cardiff,1,3,efl_cup,FALSE
+2023-08-29,Bristol City,Norwich,0,1,efl_cup,FALSE
+2023-08-29,Bolton,Middlesbrough,1,3,efl_cup,FALSE
+2023-08-29,Sheffield Wednesday,Mansfield Town,1,1,efl_cup,FALSE
+2023-08-29,Stoke City,Rotherham,6,1,efl_cup,FALSE
+2023-08-29,Port Vale,Crewe,0,0,efl_cup,FALSE
+2023-08-29,Portsmouth,Peterborough,1,1,efl_cup,FALSE
+2023-08-29,Plymouth,Crystal Palace,2,4,efl_cup,FALSE
+2023-08-29,Wycombe,Sutton Utd,0,1,efl_cup,FALSE
+2023-08-29,Luton,Gillingham,3,2,efl_cup,FALSE
+2023-08-29,Exeter City,Stevenage,1,1,efl_cup,FALSE
+2023-08-29,Newport County,Brentford,1,1,efl_cup,FALSE
+2023-08-29,Tranmere,Leicester,0,2,efl_cup,FALSE
+2023-08-29,Wrexham,Bradford,1,1,efl_cup,FALSE
+2023-08-29,Reading,Ipswich,2,2,efl_cup,FALSE
+2023-08-29,Salford City,Leeds,1,1,efl_cup,FALSE
+2023-08-30,Chelsea,AFC Wimbledon,2,1,efl_cup,FALSE
+2023-08-30,Sheffield Utd,Lincoln,0,0,efl_cup,FALSE
+2023-08-30,Nottingham Forest,Burnley,0,1,efl_cup,FALSE
+2023-08-30,Harrogate Town,Blackburn,0,8,efl_cup,FALSE
+2023-08-30,Doncaster,Everton,1,2,efl_cup,FALSE
+2023-09-26,Ipswich,Wolves,3,2,efl_cup,FALSE
+2023-09-26,Bradford,Middlesbrough,0,2,efl_cup,FALSE
+2023-09-26,Port Vale,Sutton Utd,2,1,efl_cup,FALSE
+2023-09-26,Exeter City,Luton,1,0,efl_cup,FALSE
+2023-09-26,Mansfield Town,Peterborough,2,2,efl_cup,FALSE
+2023-09-26,Salford City,Burnley,0,4,efl_cup,FALSE
+2023-09-26,Manchester United,Crystal Palace,3,0,efl_cup,FALSE
+2023-09-27,AFC Bournemouth,Stoke City,2,0,efl_cup,FALSE
+2023-09-27,Fulham,Norwich,2,1,efl_cup,FALSE
+2023-09-27,Liverpool,Leicester,3,1,efl_cup,FALSE
+2023-09-27,Chelsea,Brighton,1,0,efl_cup,FALSE
+2023-09-27,Brentford,Arsenal,0,1,efl_cup,FALSE
+2023-09-27,Aston Villa,Everton,1,2,efl_cup,FALSE
+2023-09-27,Blackburn,Cardiff,5,2,efl_cup,FALSE
+2023-09-27,Lincoln,West Ham,0,1,efl_cup,FALSE
+2023-09-27,Newcastle,Manchester City,1,0,efl_cup,FALSE
+2023-10-31,Exeter City,Middlesbrough,2,3,efl_cup,FALSE
+2023-10-31,Mansfield Town,Port Vale,0,1,efl_cup,FALSE
+2023-11-01,West Ham,Arsenal,3,1,efl_cup,FALSE
+2023-11-01,AFC Bournemouth,Liverpool,1,2,efl_cup,FALSE
+2023-11-01,Everton,Burnley,3,0,efl_cup,FALSE
+2023-11-01,Chelsea,Blackburn,2,0,efl_cup,FALSE
+2023-11-01,Ipswich,Fulham,1,3,efl_cup,FALSE
+2023-11-01,Manchester United,Newcastle,0,3,efl_cup,FALSE
+2023-12-19,Everton,Fulham,1,1,efl_cup,FALSE
+2023-12-19,Port Vale,Middlesbrough,0,3,efl_cup,FALSE
+2023-12-19,Chelsea,Newcastle,1,1,efl_cup,FALSE
+2023-12-20,Liverpool,West Ham,5,1,efl_cup,FALSE
+2024-01-09,Middlesbrough,Chelsea,1,0,efl_cup,FALSE
+2024-01-10,Liverpool,Fulham,2,1,efl_cup,FALSE
+2024-01-23,Chelsea,Middlesbrough,6,1,efl_cup,FALSE
+2024-01-24,Fulham,Liverpool,1,1,efl_cup,FALSE
+2024-02-25,Chelsea,Liverpool,0,1,efl_cup,TRUE
+2024-08-13,Carlisle,Stoke City,0,2,efl_cup,FALSE
+2024-08-13,Leyton Orient,Newport County,4,1,efl_cup,FALSE
+2024-08-13,Stockport County,Blackburn,1,6,efl_cup,FALSE
+2024-08-13,Huddersfield,Morecambe,3,0,efl_cup,FALSE
+2024-08-13,Watford,Milton Keynes Dons,5,0,efl_cup,FALSE
+2024-08-13,Cardiff,Bristol Rovers,2,0,efl_cup,FALSE
+2024-08-13,Bristol City,Coventry,0,1,efl_cup,FALSE
+2024-08-13,Preston,Sunderland,2,0,efl_cup,FALSE
+2024-08-13,Wigan,Barnsley,1,1,efl_cup,FALSE
+2024-08-13,Bolton,Mansfield Town,1,1,efl_cup,FALSE
+2024-08-13,Derby,Chesterfield,2,1,efl_cup,FALSE
+2024-08-13,Norwich,Stevenage,4,3,efl_cup,FALSE
+2024-08-13,Rotherham,Crewe,2,1,efl_cup,FALSE
+2024-08-13,Swansea,Gillingham,3,1,efl_cup,FALSE
+2024-08-13,Burton Albion,Blackpool,0,4,efl_cup,FALSE
+2024-08-13,Charlton,Birmingham,0,1,efl_cup,FALSE
+2024-08-13,Fleetwood Town,West Brom,2,1,efl_cup,FALSE
+2024-08-13,Northampton,Wycombe,0,2,efl_cup,FALSE
+2024-08-13,Oxford United,Peterborough,2,0,efl_cup,FALSE
+2024-08-13,Walsall,Exeter City,1,1,efl_cup,FALSE
+2024-08-13,Shrewsbury,Notts County,3,3,efl_cup,FALSE
+2024-08-13,Portsmouth,Millwall,0,1,efl_cup,FALSE
+2024-08-13,Colchester,Reading,2,2,efl_cup,FALSE
+2024-08-13,Crawley Town,Swindon Town,4,2,efl_cup,FALSE
+2024-08-13,Grimsby,Bradford,1,1,efl_cup,FALSE
+2024-08-13,Cambridge United,QPR,1,2,efl_cup,FALSE
+2024-08-13,Lincoln,Harrogate Town,1,2,efl_cup,FALSE
+2024-08-13,Tranmere,Accrington ST,3,0,efl_cup,FALSE
+2024-08-13,Barrow,Port Vale,3,2,efl_cup,FALSE
+2024-08-13,Bromley,AFC Wimbledon,1,2,efl_cup,FALSE
+2024-08-13,Salford City,Doncaster,0,2,efl_cup,FALSE
+2024-08-13,Sheffield Utd,Wrexham,4,2,efl_cup,FALSE
+2024-08-14,Hull City,Sheffield Wednesday,1,2,efl_cup,FALSE
+2024-08-14,Plymouth,Cheltenham,3,0,efl_cup,FALSE
+2024-08-14,Leeds,Middlesbrough,0,3,efl_cup,FALSE
+2024-08-27,Middlesbrough,Stoke City,0,5,efl_cup,FALSE
+2024-08-27,Watford,Plymouth,2,0,efl_cup,FALSE
+2024-08-27,Everton,Doncaster,3,0,efl_cup,FALSE
+2024-08-27,Leicester,Tranmere,4,0,efl_cup,FALSE
+2024-08-27,Brighton,Crawley Town,4,0,efl_cup,FALSE
+2024-08-27,Millwall,Leyton Orient,0,1,efl_cup,FALSE
+2024-08-27,Blackburn,Blackpool,1,2,efl_cup,FALSE
+2024-08-27,QPR,Luton,1,1,efl_cup,FALSE
+2024-08-27,Barnsley,Sheffield Utd,1,0,efl_cup,FALSE
+2024-08-27,Fleetwood Town,Rotherham,2,1,efl_cup,FALSE
+2024-08-27,Walsall,Huddersfield,3,2,efl_cup,FALSE
+2024-08-27,Coventry,Oxford United,1,0,efl_cup,FALSE
+2024-08-27,Shrewsbury,Bolton,0,2,efl_cup,FALSE
+2024-08-27,Grimsby,Sheffield Wednesday,1,5,efl_cup,FALSE
+2024-08-27,Barrow,Derby,0,0,efl_cup,FALSE
+2024-08-27,Harrogate Town,Preston,0,5,efl_cup,FALSE
+2024-08-27,Crystal Palace,Norwich,4,0,efl_cup,FALSE
+2024-08-27,Birmingham,Fulham,0,2,efl_cup,FALSE
+2024-08-28,Wolves,Burnley,2,0,efl_cup,FALSE
+2024-08-28,Cardiff,Southampton,3,5,efl_cup,FALSE
+2024-08-28,West Ham,AFC Bournemouth,1,0,efl_cup,FALSE
+2024-08-28,Swansea,Wycombe,0,1,efl_cup,FALSE
+2024-08-28,AFC Wimbledon,Ipswich,2,2,efl_cup,FALSE
+2024-08-28,Colchester,Brentford,0,1,efl_cup,FALSE
+2024-08-28,Nottingham Forest,Newcastle,1,1,efl_cup,FALSE
+2024-09-17,Stoke City,Fleetwood Town,1,1,efl_cup,FALSE
+2024-09-17,Everton,Southampton,1,1,efl_cup,FALSE
+2024-09-17,Brentford,Leyton Orient,3,1,efl_cup,FALSE
+2024-09-17,Preston,Fulham,1,1,efl_cup,FALSE
+2024-09-17,QPR,Crystal Palace,1,2,efl_cup,FALSE
+2024-09-17,Blackpool,Sheffield Wednesday,0,1,efl_cup,FALSE
+2024-09-17,Manchester United,Barnsley,7,0,efl_cup,FALSE
+2024-09-18,Brighton,Wolves,3,2,efl_cup,FALSE
+2024-09-18,Coventry,Tottenham,1,2,efl_cup,FALSE
+2024-09-24,Chelsea,Barrow,5,0,efl_cup,FALSE
+2024-09-24,Manchester City,Watford,2,1,efl_cup,FALSE
+2024-09-24,Walsall,Leicester,0,0,efl_cup,FALSE
+2024-09-24,Wycombe,Aston Villa,1,2,efl_cup,FALSE
+2024-09-25,Arsenal,Bolton,5,1,efl_cup,FALSE
+2024-09-25,Liverpool,West Ham,5,1,efl_cup,FALSE
+2024-10-01,Newcastle,AFC Wimbledon,1,0,efl_cup,FALSE
+2024-10-29,Southampton,Stoke City,3,2,efl_cup,FALSE
+2024-10-29,Brentford,Sheffield Wednesday,1,1,efl_cup,FALSE
+2024-10-30,Brighton,Liverpool,2,3,efl_cup,FALSE
+2024-10-30,Manchester United,Leicester,5,2,efl_cup,FALSE
+2024-10-30,Newcastle,Chelsea,2,0,efl_cup,FALSE
+2024-10-30,Preston,Arsenal,0,3,efl_cup,FALSE
+2024-10-30,Aston Villa,Crystal Palace,1,2,efl_cup,FALSE
+2024-10-30,Tottenham,Manchester City,2,1,efl_cup,FALSE
+2024-12-18,Arsenal,Crystal Palace,3,2,efl_cup,FALSE
+2024-12-18,Newcastle,Brentford,3,1,efl_cup,FALSE
+2024-12-18,Southampton,Liverpool,1,2,efl_cup,FALSE
+2024-12-19,Tottenham,Manchester United,4,3,efl_cup,FALSE
+2025-01-07,Arsenal,Newcastle,0,2,efl_cup,FALSE
+2025-01-08,Tottenham,Liverpool,1,0,efl_cup,FALSE
+2025-02-05,Newcastle,Arsenal,2,0,efl_cup,FALSE
+2025-02-06,Liverpool,Tottenham,4,0,efl_cup,FALSE
+2025-03-16,Liverpool,Newcastle,1,2,efl_cup,TRUE
