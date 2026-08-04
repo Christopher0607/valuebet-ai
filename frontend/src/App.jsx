@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { isAuthEnabled, supabase, getToken, signIn, signUp, signOut, supabaseUrl, supabaseKeyHint } from "./auth";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
-import { zhTeam } from "./teamNames";
+import { TeamLangProvider, useZhTeam, useTeamLang } from "./teamNames";
 
 // 打包后走同源相对路径，不写死主机名——后端本来就在托管这份前端，
 // 所以页面从哪个地址打开，API 就跟着走到哪台机器。
@@ -171,6 +171,15 @@ function writeCache(userKey, payload) {
 
 // ══════════════════════════════════════════════════════════
 export default function App() {
+  return (
+    <TeamLangProvider>
+      <AppInner />
+    </TeamLangProvider>
+  );
+}
+
+function AppInner() {
+  const zhTeam = useZhTeam();
   const [tab, setTab]       = useState("upcoming");
   const [status, setStatus] = useState(null);
   const [matches, setMatches] = useState([]);
@@ -979,6 +988,11 @@ function SettingsPanel({ settings, onSave, onClose }) {
   const [d, setD] = useState(settings);
   useEffect(() => { setD(settings); }, [settings]);
   const inp = { width: "100%", background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: "7px 9px", color: C.text, fontSize: 13, fontWeight: 700 };
+  // 队名语言是纯前端展示偏好，存在独立的 localStorage key（teamNames.jsx
+  // 里的 TeamLangProvider），跟这个面板其余项走的后端 settings 接口
+  // 是两套机制——不用等点"保存设置"就立刻生效，也不会因为没点保存
+  // 而丢失。
+  const { lang, setLang } = useTeamLang();
 
   return (
     <div style={{ background: C.purpleDim, borderBottom: `1px solid ${C.purple}44`, padding: "14px 16px" }}>
@@ -1022,6 +1036,21 @@ function SettingsPanel({ settings, onSave, onClose }) {
             </select>
           </div>
         </div>
+
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 10, color: C.textDim, marginBottom: 4 }}>队伍名字语言</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["zh", "中文"], ["en", "English"]].map(([code, label]) => (
+              <button key={code} onClick={() => setLang(code)}
+                style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${lang === code ? C.purple : C.border}`,
+                         background: lang === code ? C.purple : "transparent",
+                         color: lang === code ? "#0a0510" : C.textDim, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <button onClick={() => onSave(d)} style={{ marginTop: 12, padding: "8px 18px", borderRadius: 8, border: "none", background: C.purple, color: "#0a0510", fontWeight: 800, fontSize: 12 }}>
           保存设置
         </button>
@@ -1211,6 +1240,7 @@ function DayGroups({ matches, renderMatch, selectedIds }) {
 }
 
 function MatchCard({ match, settings, onRefresh, provisional }) {
+  const zhTeam = useZhTeam();
   const [open, setOpen] = useState(false);
   const [oHome, setOHome] = useState(match.latest_odds?.odds_home?.toString() || "");
   const [oDraw, setODraw] = useState(match.latest_odds?.odds_draw?.toString() || "");
@@ -1435,6 +1465,7 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
 
 // ── Real Bets Tab ────────────────────────────────────────────
 function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals = [], onCancel, cancelling, onRefresh }) {
+  const zhTeam = useZhTeam();
   const pending = realBets.filter(b => b.result === "pending");
   const settled = realBets.filter(b => b.result !== "pending");
   const pSettled = parlays.filter(p => p.result !== "pending");
@@ -1772,6 +1803,7 @@ function ChartTab({ bankroll, settings }) {
 
 // ── Parlay Suggest Tab ──────────────────────────────────────
 function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
+  const zhTeam = useZhTeam();
   const [selected, setSelected] = useState({});   // { matchId: true }
   // 赔率从后端已保存的记录初始化——之前这里是空对象，赔率只活在 React state 里，
   // 一刷新就没了；单场那边（MatchCard）一直是从 match.latest_odds 读的，

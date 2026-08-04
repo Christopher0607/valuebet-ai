@@ -1,0 +1,336 @@
+// 球队中文简称 —— 纯前端展示层的翻译表，不改变任何存储/接口数据。
+// 后端队名（match.team1/team2 等）保持原样不动，仅在渲染时做替换；
+// 找不到的队伍原样显示英文名，不是 bug，是覆盖范围的自然边界。
+//
+// 数据来源：
+//   前 156 条 —— backend 最早接入的 6 个赛事（2026世界杯/英超/西甲/意甲/
+//   德甲/欧冠）里出现过的全部球队，2026-08 抓取，一一对应生成。
+//   后面新增的 —— 美职联、英格兰联赛杯接入后新出现的球队，2026-08-04
+//   用训练数据（API-Football）+ 实时赛程（The Odds API）核对出的真实
+//   队名列表生成。这两个赛事的源数据本身就用简称（"Newcastle" 不是
+//   "Newcastle United"，"Tottenham" 不是 "Tottenham Hotspur"），跟前
+//   156 条里同一支队伍的写法不一样，所以是新的 key，不是重复——两套
+//   key 都指向同一个中文译名。
+export const TEAM_ZH = {
+  "1. FC Heidenheim 1846": "海登海姆",
+  "1. FC Köln": "科隆",
+  "1. FC Union Berlin": "柏林联合",
+  "1. FSV Mainz 05": "美因茨",
+  "AC Milan": "AC米兰",
+  "AC Monza": "蒙扎",
+  "AC Pisa 1909": "比萨",
+  "AC Sparta Praha": "布拉格斯巴达",
+  "ACF Fiorentina": "佛罗伦萨",
+  "AFC Bournemouth": "伯恩茅斯",
+  "AS Monaco": "摩纳哥",
+  "AS Roma": "罗马",
+  "Algeria": "阿尔及利亚",
+  "Argentina": "阿根廷",
+  "Arsenal": "阿森纳",
+  "Aston Villa": "阿斯顿维拉",
+  "Atalanta BC": "亚特兰大",
+  "Athletic Club": "毕尔巴鄂竞技",
+  "Australia": "澳大利亚",
+  "Austria": "奥地利",
+  "BSC Young Boys": "伯尔尼年轻人",
+  "Bayer 04 Leverkusen": "勒沃库森",
+  "Belgium": "比利时",
+  "Bologna FC 1909": "博洛尼亚",
+  "Borussia Dortmund": "多特蒙德",
+  "Borussia Mönchengladbach": "门兴格拉德巴赫",
+  "Bosnia & Herzegovina": "波黑",
+  "Brazil": "巴西",
+  "Brentford": "布伦特福德",
+  "Brighton & Hove Albion": "布莱顿",
+  "Burnley": "伯恩利",
+  "CA Osasuna": "奥萨苏纳",
+  "Cagliari Calcio": "卡利亚里",
+  "Canada": "加拿大",
+  "Cape Verde": "佛得角",
+  "Celtic": "凯尔特人",
+  "Chelsea": "切尔西",
+  "Club Atlético de Madrid": "马德里竞技",
+  "Club Brugge KV": "布鲁日",
+  "Colombia": "哥伦比亚",
+  "Como 1907": "科莫",
+  "Coventry City": "考文垂",
+  "Croatia": "克罗地亚",
+  "Crystal Palace": "水晶宫",
+  "Curaçao": "库拉索",
+  "Czech Republic": "捷克",
+  "DR Congo": "刚果(金)",
+  "Deportivo Alavés": "阿拉维斯",
+  "Ecuador": "厄瓜多尔",
+  "Egypt": "埃及",
+  "Eintracht Frankfurt": "法兰克福",
+  "Elche CF": "埃尔切",
+  "England": "英格兰",
+  "Everton": "埃弗顿",
+  "FC Augsburg": "奥格斯堡",
+  "FC Barcelona": "巴塞罗那",
+  "FC Bayern München": "拜仁慕尼黑",
+  "FC Internazionale Milano": "国际米兰",
+  "FC Red Bull Salzburg": "萨尔茨堡红牛",
+  "FC Schalke 04": "沙尔克04",
+  "FC St. Pauli 1910": "圣保利",
+  "FK Crvena Zvezda": "贝尔格莱德红星",
+  "FK Shakhtar Donetsk": "顿涅茨克矿工",
+  "Feyenoord Rotterdam": "费耶诺德",
+  "France": "法国",
+  "Frosinone Calcio": "弗罗西诺内",
+  "Fulham": "富勒姆",
+  "GNK Dinamo Zagreb": "萨格勒布迪那摩",
+  "Genoa CFC": "热那亚",
+  "Germany": "德国",
+  "Getafe CF": "赫塔菲",
+  "Ghana": "加纳",
+  "Girona": "赫罗纳",
+  "Haiti": "海地",
+  "Hamburger SV": "汉堡",
+  "Hellas Verona": "维罗纳",
+  "Hull City": "赫尔城",
+  "Ipswich Town": "伊普斯维奇",
+  "Iran": "伊朗",
+  "Iraq": "伊拉克",
+  "Ivory Coast": "科特迪瓦",
+  "Japan": "日本",
+  "Jordan": "约旦",
+  "Juventus": "尤文图斯",
+  "Leeds United": "利兹联",
+  "Levante UD": "莱万特",
+  "Lille OSC": "里尔",
+  "Liverpool": "利物浦",
+  "Manchester City": "曼城",
+  "Manchester United": "曼联",
+  "Mexico": "墨西哥",
+  "Morocco": "摩洛哥",
+  "Málaga CF": "马拉加",
+  "Netherlands": "荷兰",
+  "New Zealand": "新西兰",
+  "Newcastle United": "纽卡斯尔联",
+  "Norway": "挪威",
+  "Nottingham Forest": "诺丁汉森林",
+  "PSV": "埃因霍温",
+  "Panama": "巴拿马",
+  "Paraguay": "巴拉圭",
+  "Paris Saint-Germain": "巴黎圣日耳曼",
+  "Parma Calcio 1913": "帕尔马",
+  "Portugal": "葡萄牙",
+  "Qatar": "卡塔尔",
+  "RB Leipzig": "莱比锡红牛",
+  "RC Celta de Vigo": "塞尔塔",
+  "RC Deportivo La Coruña": "拉科鲁尼亚",
+  "RCD Espanyol de Barcelona": "西班牙人",
+  "RCD Mallorca": "马略卡",
+  "Rayo Vallecano de Madrid": "巴列卡诺",
+  "Real Betis Balompié": "皇家贝蒂斯",
+  "Real Madrid CF": "皇家马德里",
+  "Real Oviedo": "皇家奥维耶多",
+  "Real Racing Club de Santander": "桑坦德竞技",
+  "Real Sociedad de Fútbol": "皇家社会",
+  "SC Freiburg": "弗赖堡",
+  "SC Paderborn 07": "帕德博恩",
+  "SK Sturm Graz": "格拉茨风暴",
+  "SS Lazio": "拉齐奥",
+  "SSC Napoli": "那不勒斯",
+  "SV 07 Elversberg": "埃尔沃斯贝格",
+  "SV Werder Bremen": "云达不来梅",
+  "Saudi Arabia": "沙特阿拉伯",
+  "Scotland": "苏格兰",
+  "Senegal": "塞内加尔",
+  "Sevilla": "塞维利亚",
+  "South Africa": "南非",
+  "South Korea": "韩国",
+  "Spain": "西班牙",
+  "Sport Lisboa e Benfica": "本菲卡",
+  "Sporting Clube de Portugal": "葡萄牙体育",
+  "Stade Brestois 29": "布雷斯特",
+  "Sunderland": "桑德兰",
+  "Sweden": "瑞典",
+  "Switzerland": "瑞士",
+  "TSG 1899 Hoffenheim": "霍芬海姆",
+  "Torino": "都灵",
+  "Tottenham Hotspur": "热刺",
+  "Tunisia": "突尼斯",
+  "Turkey": "土耳其",
+  "US Cremonese": "克雷莫纳",
+  "US Lecce": "莱切",
+  "US Sassuolo Calcio": "萨索洛",
+  "USA": "美国",
+  "Udinese Calcio": "乌迪内斯",
+  "Uruguay": "乌拉圭",
+  "Uzbekistan": "乌兹别克斯坦",
+  "Valencia CF": "瓦伦西亚",
+  "Venezia": "威尼斯",
+  "VfB Stuttgart": "斯图加特",
+  "VfL Wolfsburg": "沃尔夫斯堡",
+  "Villarreal CF": "比利亚雷亚尔",
+  "West Ham United": "西汉姆联",
+  "Wolverhampton Wanderers": "狼队",
+  "ŠK Slovan Bratislava": "布拉迪斯拉发斯拉万",
+
+  // ── 美职联（29 支 + 1 支 2025 年扩军新队） ──────────────────
+  "Atlanta United": "亚特兰大联",
+  "Austin": "奥斯汀FC",
+  "CF Montreal": "蒙特利尔",
+  "Charlotte": "夏洛特FC",
+  "Chicago Fire": "芝加哥火焰",
+  "Colorado Rapids": "科罗拉多急流",
+  "Columbus Crew": "哥伦布机员",
+  "DC United": "华盛顿特区联",
+  "FC Cincinnati": "辛辛那提FC",
+  "FC Dallas": "达拉斯FC",
+  "Houston Dynamo": "休斯顿迪纳摩",
+  "Inter Miami": "国际迈阿密",
+  "Los Angeles FC": "洛杉矶FC",
+  "Los Angeles Galaxy": "洛杉矶银河",
+  "Minnesota United": "明尼苏达联",
+  "Nashville SC": "纳什维尔",
+  "New England Revolution": "新英格兰革命",
+  "New York City": "纽约城",
+  "New York Red Bulls": "纽约红牛",
+  "Orlando City SC": "奥兰多城",
+  "Philadelphia Union": "费城联合",
+  "Portland Timbers": "波特兰伐木者",
+  "Real Salt Lake": "皇家盐湖城",
+  "San Diego FC": "圣迭戈FC",
+  "San Jose Earthquakes": "圣何塞地震",
+  "Seattle Sounders": "西雅图海湾人",
+  "Sporting Kansas City": "堪萨斯城竞技",
+  "St. Louis City": "圣路易斯城",
+  "Toronto": "多伦多FC",
+  "Vancouver Whitecaps": "温哥华白帽",
+
+  // ── 英格兰联赛杯新增（不在前 156 条里的简称写法） ──────────────
+  "AFC Wimbledon": "温布尔登",
+  "Accrington ST": "阿克灵顿斯坦利",
+  "Barnet": "巴尼特",
+  "Barnsley": "巴恩斯利",
+  "Barrow": "巴罗",
+  "Birmingham": "伯明翰城",
+  "Blackburn": "布莱克本流浪者",
+  "Blackpool": "布莱克浦",
+  "Bolton": "博尔顿流浪者",
+  "Bradford": "布拉德福德城",
+  "Brighton": "布莱顿",
+  "Bristol City": "布里斯托城",
+  "Bristol Rovers": "布里斯托流浪者",
+  "Bromley": "布罗姆利",
+  "Burton Albion": "伯顿阿尔比恩",
+  "Cambridge United": "剑桥联",
+  "Cardiff": "卡迪夫城",
+  "Carlisle": "卡莱尔联",
+  "Charlton": "查尔顿竞技",
+  "Cheltenham": "切尔滕纳姆",
+  "Chesterfield": "切斯特菲尔德",
+  "Colchester": "科尔切斯特联",
+  "Coventry": "考文垂",
+  "Crawley Town": "克劳利镇",
+  "Crewe": "克鲁亚历山德拉",
+  "Derby": "德比郡",
+  "Doncaster": "唐卡斯特流浪者",
+  "Exeter City": "埃克塞特城",
+  "Fleetwood Town": "弗利特伍德",
+  "Forest Green": "森林绿流浪者",
+  "Gillingham": "吉林汉姆",
+  "Grimsby": "格里姆斯比城",
+  "Harrogate Town": "哈罗盖特",
+  "Hartlepool": "哈特尔浦联",
+  "Huddersfield": "哈德斯菲尔德",
+  "Ipswich": "伊普斯维奇",
+  "Leeds": "利兹联",
+  "Leicester": "莱斯特城",
+  "Leyton Orient": "莱顿东方",
+  "Lincoln": "林肯城",
+  "Luton": "卢顿",
+  "Mansfield Town": "曼斯菲尔德",
+  "Middlesbrough": "米德尔斯堡",
+  "Millwall": "米尔沃尔",
+  "Milton Keynes Dons": "米尔顿凯恩斯",
+  "Morecambe": "莫克姆",
+  "Newcastle": "纽卡斯尔联",
+  "Newport County": "纽波特郡",
+  "Northampton": "北安普顿",
+  "Norwich": "诺维奇",
+  "Notts County": "诺茨郡",
+  "Oldham Athletic": "奥尔德姆竞技",
+  "Oxford United": "牛津联",
+  "Peterborough": "彼得堡联",
+  "Plymouth": "普利茅斯",
+  "Port Vale": "波特维尔",
+  "Portsmouth": "朴茨茅斯",
+  "Preston": "普雷斯顿",
+  "QPR": "女王公园巡游者",
+  "Reading": "雷丁",
+  "Rochdale": "罗奇代尔",
+  "Rotherham": "罗瑟汉姆",
+  "Salford City": "索尔福德城",
+  "Sheffield Utd": "谢菲尔德联",
+  "Sheffield Wednesday": "谢菲尔德星期三",
+  "Shrewsbury": "什鲁斯伯里",
+  "Southampton": "南安普顿",
+  "Stevenage": "斯蒂夫尼奇",
+  "Stockport County": "斯托克波特郡",
+  "Stoke City": "斯托克城",
+  "Sutton Utd": "萨顿联",
+  "Swansea": "斯旺西",
+  "Swindon Town": "斯温登",
+  "Tottenham": "热刺",
+  "Tranmere": "特兰米尔",
+  "Walsall": "沃尔索尔",
+  "Watford": "沃特福德",
+  "West Brom": "西布罗姆维奇",
+  "West Ham": "西汉姆联",
+  "Wigan": "维冈竞技",
+  "Wolves": "狼队",
+  "Wrexham": "雷克瑟姆",
+  "Wycombe": "维康流浪者",
+};
+
+// ── 语言切换（只影响队伍名，其余界面文字保持中文不变） ──────────
+//
+// zhTeam(name) 保留原来的签名和行为（不传语言就是中文，兼容任何还没
+// 改造的旧调用点）。新增 TeamLangProvider + useZhTeam()：组件内用
+// useZhTeam() 拿到的函数会跟着当前语言切换，选择结果存 localStorage，
+// 刷新页面还在。
+import { createContext, useContext, useState, useEffect } from "react";
+
+const LANG_KEY = "vb_team_lang_v1";
+
+export function zhTeam(name, lang = "zh") {
+  if (lang === "en") return name || "";
+  return TEAM_ZH[name] || name;
+}
+
+const TeamLangContext = createContext({ lang: "zh", setLang: () => {} });
+
+export function TeamLangProvider({ children }) {
+  const [lang, setLang] = useState(() => {
+    try {
+      return localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh";
+    } catch {
+      return "zh";
+    }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(LANG_KEY, lang); } catch { /* 隐私模式等，忽略 */ }
+  }, [lang]);
+
+  return (
+    <TeamLangContext.Provider value={{ lang, setLang }}>
+      {children}
+    </TeamLangContext.Provider>
+  );
+}
+
+export function useTeamLang() {
+  return useContext(TeamLangContext);
+}
+
+// 组件内替代直接 import { zhTeam }：拿到的函数自动带上当前语言，
+// 调用方不用每次都传 lang 参数。
+export function useZhTeam() {
+  const { lang } = useContext(TeamLangContext);
+  return (name) => zhTeam(name, lang);
+}
