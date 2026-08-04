@@ -907,8 +907,32 @@ def run_full_update(db: Session) -> dict:
                 # 另外5个赛事的预测一条都没生成。
                 try:
                     if comp.code in _ODDS_TXT_COMPETITIONS:
-                        played = api_football.fetch_training_matches(comp.code)
+                        # 三路数据各自独立成败，不互相拖累：
+                        #   历史赛果(API-Football) —— 2022-2024，不变量，
+                        #     第一次抓完就一直在库里，后续失败无损失
+                        #   当前赛季赛果(The Odds API /scores) —— 决定注单
+                        #     能不能结算，最不能丢的一路
+                        #   未来赛程(The Odds API /events) —— 决定有没有得预测
+                        #
+                        # 早先的写法是历史那路直接抛出去，结果 API-Football
+                        # 一旦挂了（额度用尽、服务抖动），当前赛季的赛果也跟着
+                        # 抓不成，用户的注单就一直挂着不结算——而那批历史数据
+                        # 明明早就在库里了，重抓与否根本不影响什么。
+                        played, sub_fail = [], []
+                        for label, fn in (("历史赛果", lambda: api_football.fetch_training_matches(comp.code)),
+                                          ("当前赛季赛果", lambda: odds_api.fetch_recent_scores(comp.code))):
+                            try:
+                                played += fn()
+                            except Exception as se:
+                                sub_fail.append("%s: %s" % (label, str(se)[:120]))
+                                logging.getLogger("valuebet.updater").warning(
+                                    "[%s] %s 抓取失败: %s", comp.code, label, str(se)[:200])
+                        # 赛程这一路仍然直接抛：它失败意味着这个赛事这一轮
+                        # 完全没有可预测的比赛，属于真的该标红的情况
                         upcoming = odds_api.fetch_upcoming_events(comp.code)
+                        if sub_fail:
+                            # 不静默——半成功也要在界面的状态条上看得见
+                            failed_comps.append("%s（部分）: %s" % (comp.code, "; ".join(sub_fail)))
                     else:
                         played = fetch_results(comp)
                         upcoming = fetch_upcoming(comp)

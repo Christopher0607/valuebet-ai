@@ -10,6 +10,7 @@ The Odds API 客户端 —— 只用来查"接下来有哪些比赛"，不拉赔
 也不会往输入框自动填任何数字。
 """
 import os
+import logging
 import requests
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "").strip()
@@ -115,4 +116,101 @@ def fetch_upcoming_events(league_code: str) -> list:
             "team2": TEAM_ALIASES.get(ev["away_team"], ev["away_team"]),
             "round": "",
         })
+    return out
+
+
+def _parse_score_entry(ev: dict) -> tuple:
+    """从一条 /scores 记录里取出 (主队进球, 客队进球)，取不到就返回 None。
+
+    刻意写得挑剔：这个函数是在**没有拿到真实返回验证过**的情况下写的
+    （开发环境的网络策略连不上 the-odds-api.com，用浏览器也试过）。
+    所以宁可什么都不返回，也不猜着解析——一个猜错的比分会被
+    upsert_matches 当成真实赛果写进库，进而喂给贝叶斯更新、结算注单，
+    是会污染数据的错误；而返回 None 只是"这场暂时没结算"，下一轮
+    还能再来一次。失败要看得见、要可恢复。
+
+    按 The Odds API v4 文档，scores 是 [{"name": 队名, "score": "2"}, ...]，
+    队名跟同一条记录里的 home_team/away_team 对应。分数是字符串。
+    """
+    scores = ev.get("scores")
+    if not isinstance(scores, list) or len(scores) < 2:
+        return None
+    home, away = ev.get("home_team"), ev.get("away_team")
+    by_name = {}
+    for s in scores:
+        if not isinstance(s, dict):
+            return None
+        n, v = s.get("name"), s.get("score")
+        if n is None or v is None:
+            return None
+        try:
+            by_name[n] = int(str(v).strip())
+        except (TypeError, ValueError):
+            return None            # 分数不是整数 → 结构跟预期不符，放弃这条
+    if home not in by_name or away not in by_name:
+        return None                # 队名对不上，不敢猜哪个是主队
+    return by_name[home], by_name[away]
+
+
+def fetch_recent_scores(league_code: str, days_from: int = 3) -> list:
+    """抓最近几天已完赛的比分，补上 API-Football 免费档拿不到的当前赛季赛果。
+
+    为什么需要它：api_football.py 的免费档只放行 2022-2024 三个赛季，
+    当前赛季的比分它一条都给不了。后果不是"少点数据"，是**在这两个
+    赛事下的注永远不会自动结算、贝叶斯参数永远不更新、比赛永远停在
+    "未开赛"**。/events 只给赛程骨架，补不了这个洞，/scores 才可以。
+
+    返回记录跟 openfootball 的"已完赛"同形（date/time/team1/team2/score），
+    直接喂给 upsert_matches 就能填进已存在的那条赛程记录。
+
+    daysFrom 上限是 3（超出会被接口拒绝）。更新周期是 12 小时，3 天的
+    回看窗口有足够重叠，某一次更新失败也不会漏掉比赛。
+
+    额度提醒：/scores 带 daysFrom 时每次调用计 2 个额度，两个赛事、
+    每天两轮 = 8/天 ≈ 240/月，免费档是 500/月。够用但不宽裕，
+    以后如果再加赛事要重新算这笔账。
+    """
+    if not ODDS_API_KEY:
+        raise RuntimeError("ODDS_API_KEY 未配置，跳过美职联/联赛杯的赛果抓取")
+    sport_key = SPORT_KEYS[league_code]
+    r = requests.get(
+        f"{_BASE}/sports/{sport_key}/scores/",
+        params={"apiKey": ODDS_API_KEY, "daysFrom": days_from},
+        timeout=20,
+    )
+    r.raise_for_status()
+    events = r.json()
+    if not isinstance(events, list):
+        raise RuntimeError(
+            "/scores 返回的不是数组（实际是 %s）——接口结构跟预期不符，"
+            "本轮不写入任何赛果" % type(events).__name__)
+
+    out, skipped = [], 0
+    for ev in events:
+        if not isinstance(ev, dict) or not ev.get("completed"):
+            continue                       # 只要真正踢完的
+        commence = ev.get("commence_time")
+        home, away = ev.get("home_team"), ev.get("away_team")
+        if not (isinstance(commence, str) and len(commence) >= 16 and home and away):
+            skipped += 1
+            continue
+        parsed = _parse_score_entry(ev)
+        if parsed is None:
+            skipped += 1
+            continue
+        h, a = parsed
+        out.append({
+            "date": commence[:10],
+            "time": commence[11:16],
+            "team1": TEAM_ALIASES.get(home, home),
+            "team2": TEAM_ALIASES.get(away, away),
+            "round": "",
+            "score": {"ft": [h, a]},
+        })
+
+    if skipped:
+        # 不静默吞掉。跳过的多说明接口结构可能变了，日志里要看得见
+        logging.getLogger("valuebet.odds_api").warning(
+            "[%s] /scores 有 %d 条完赛记录结构不符预期被跳过（成功解析 %d 条）",
+            league_code, skipped, len(out))
     return out
