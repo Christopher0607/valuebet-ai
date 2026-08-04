@@ -111,6 +111,14 @@ _CLUB_NAME_ALIASES = {
     "Bayern München": "FC Bayern München",
     "Bor. Mönchengladbach": "Borussia Mönchengladbach",
     "Werder Bremen": "SV Werder Bremen",
+    # MLS —— 上面那条"去掉尾部 FC/AFC"的规则是照欧洲联赛的习惯写的，那边
+    # "Arsenal FC" 的 FC 只是通用后缀，去掉不影响识别。但"Los Angeles FC"
+    # （官方队名就叫 LAFC）不一样，FC 是队名本身的一部分，去掉之后变成
+    # 光秃秃的"Los Angeles"——美职联同时有 Los Angeles Galaxy 和这支队，
+    # "Los Angeles" 单独存在会让人分不清是哪一支，用真实抓下来的
+    # API-Football 数据（2022-2024 三个赛季）核实过确实会被削成这样，
+    # 必须专门排除。
+    "Los Angeles": "Los Angeles FC",
 }
 
 
