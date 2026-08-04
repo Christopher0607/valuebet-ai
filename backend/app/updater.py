@@ -15,6 +15,7 @@ how this is handled without hardcoding a season that will go stale.
 """
 import requests
 import threading
+import logging
 from datetime import datetime, date as date_cls
 from sqlalchemy.orm import Session
 
@@ -498,6 +499,89 @@ def upsert_matches(db: Session, comp: models.Competition, played: list, upcoming
     return updated
 
 
+def _canonical_team(name: str) -> str:
+    """美职联/联赛杯专用：先过 The Odds API 的全称→简称别名表，再过通用归一化。
+
+    两个数据源对同一支球队的写法不一样（The Odds API 用官方全称
+    "Wolverhampton Wanderers"，API-Football 训练数据用简称 "Wolves"），
+    这个函数给出唯一的规范形式。幂等——对已经是简称的名字再跑一次结果不变。
+    """
+    return normalize_team_name(odds_api.TEAM_ALIASES.get(name, name))
+
+
+def dedupe_alias_renamed_matches(db: Session) -> int:
+    """把用旧队名存下来的比赛归一到规范队名，并合并因此产生的重复记录。
+
+    为什么需要这个：`upsert_matches` 认的是 (日期, 主队, 客队) 三元组。
+    别名表是后来才加的——加之前那次更新把 The Odds API 的原名
+    ("Wolverhampton Wanderers") 存进了库，加之后同一场比赛变成了 "Wolves"，
+    三元组对不上，于是**又插了一条**。生产环境上的实际表现：同一场
+    "狼队 vs 波特维尔" 在预测页出现两次，而且两条的概率还不一样——
+    一条能查到 "Wolves" 的真实攻防参数（98.2%），另一条
+    "Wolverhampton Wanderers" 在联赛杯参数表里查无此队、退回兜底值
+    （80.6%）。用真实数据本地复现过，两个数字跟线上截图对得上。
+
+    只处理 _ODDS_TXT_COMPETITIONS 里那两个赛事。**绝对不能对全部赛事跑**：
+    "Wolverhampton Wanderers"、"Leicester City"、"West Ham United" 等恰好是
+    英超那张 club 参数表里本来就正确的队名，对英超套用这张别名表会把
+    正确的队名改坏——这跟当初别名表必须单独放在 odds_api.py、不能并进
+    全局 _CLUB_NAME_ALIASES 是同一个理由。
+
+    合并时保留哪一条：优先留已完赛的（有比分的那条信息更多），其次留
+    id 小的（更早插入，更可能已经挂了用户的注单）。被删那条的子记录
+    （赔率/虚拟盘注单/实盘注单/串关腿）全部改指到保留的那条——直接删会
+    让用户的下注记录变成孤儿，那比重复显示严重得多。预测表是 match_id
+    唯一约束，被删那条的预测只能删掉，下游 update_predictions() 会按
+    保留下来的比赛重新生成。
+
+    返回删掉的重复记录数。没有重复时是个纯读操作，不写库。
+    """
+    comps = db.query(models.Competition).filter(
+        models.Competition.code.in_(_ODDS_TXT_COMPETITIONS)
+    ).all()
+    removed = 0
+
+    for comp in comps:
+        rows = db.query(models.Match).filter_by(competition_id=comp.id).all()
+        groups = {}
+        for m in rows:
+            key = (m.date, _canonical_team(m.team1), _canonical_team(m.team2))
+            groups.setdefault(key, []).append(m)
+
+        for (d, ct1, ct2), members in groups.items():
+            # 已完赛的排前面，同类按 id 升序 —— 第一个就是要保留的那条
+            members.sort(key=lambda m: (0 if m.score1 is not None else 1, m.id))
+            keeper, losers = members[0], members[1:]
+
+            for lo in losers:
+                # 保留的那条如果没有比分、而被删的那条有，把比分搬过去，
+                # 否则会把已经踢完的结果丢掉
+                if keeper.score1 is None and lo.score1 is not None:
+                    keeper.score1, keeper.score2 = lo.score1, lo.score2
+                    keeper.status = lo.status
+                if not keeper.time_utc and lo.time_utc:
+                    keeper.time_utc = lo.time_utc
+                if not keeper.round and lo.round:
+                    keeper.round = lo.round
+
+                for model_cls in (models.Odds, models.Bet, models.RealBet, models.ParlayLeg):
+                    db.query(model_cls).filter_by(match_id=lo.id).update(
+                        {"match_id": keeper.id}, synchronize_session=False)
+                db.query(models.Prediction).filter_by(match_id=lo.id).delete(
+                    synchronize_session=False)
+                db.delete(lo)
+                removed += 1
+
+            # 顺手把保留下来的这条也归一到规范队名，否则下一轮更新又会
+            # 因为三元组对不上而重新插一条——只修合并、不改名字的话，
+            # 这个 bug 每 12 小时就会复发一次
+            if keeper.team1 != ct1 or keeper.team2 != ct2:
+                keeper.team1, keeper.team2 = ct1, ct2
+
+    db.commit()
+    return removed
+
+
 def update_bayesian_states_for_newly_played_matches(db: Session) -> int:
     """
     For every match that is 'played' AND hasn't yet been folded into its
@@ -810,6 +894,13 @@ def run_full_update(db: Session) -> dict:
         try:
             total_matches_updated = 0
             failed_comps = []
+            # 先清掉历史遗留的重复（旧队名 vs 规范队名各存了一条），再抓新数据。
+            # 顺序不能反：先抓的话，新抓回来的规范队名又会跟旧队名那条并存，
+            # 这一轮结束时库里仍然是重复的。
+            n_deduped = dedupe_alias_renamed_matches(db)
+            if n_deduped:
+                logging.getLogger("valuebet.updater").info(
+                    "[dedupe] 合并了 %d 条队名不一致导致的重复比赛", n_deduped)
             for comp in get_active_competitions(db):
                 # 每个赛事单独 try —— 一个赛事的数据源挂了（比如某季文件还没
                 # 发布），不该连累其他赛事。实测踩过：欧冠 404 导致整个事务回滚，
