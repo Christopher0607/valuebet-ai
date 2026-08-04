@@ -165,13 +165,22 @@ def guess_current_season(today: date_cls = None) -> str:
 # 在自己的系统里查不到，看起来像系统坏了，其实是取错了文件。
 #
 # 所以按赛季从新到旧逐个试，每个赛季先试 .json 再试 .txt，取第一个存在的。
-# 欧冠没有对应的 .txt 源（八月底才抽签，任何地方都还没有赛程），
-# 它继续走 .json 那条路，等镜像更新。
+#
+# 欧冠原来被当成例外留在只走 .json 那条路——注释曾经写着"欧冠没有对应的
+# .txt 源"，но 2026-08-04 实测发现这是错的：openfootball/champions-league
+# 仓库有 {season}/cl.txt，跟其他联赛一样按赛季发布，只是欧冠的赛季文件是
+# 完赛后才补全的（新赛季抽签在 8 月底才进行，抽签前那一季自然没有文件）。
+# 加上这条源之后，「当前赛季 .json/.txt 都还没有」时会自动退到上一季——
+# 而上一季（2025-26）恰好是刚踢完全部 189 场的完整数据，比 .json 镜像
+# 卡住不动的 2024-25 新了一整年，对 MLE 训练和回测都更有意义。
+# 2026-27 赛季本身要等抽签后（约 8 月 27 日）才会有任何免费源发布赛程，
+# 在那之前"预测"页看不到欧冠的未来比赛是正确行为，不是 bug。
 _TXT_SOURCES = {
     "en.1": "https://raw.githubusercontent.com/openfootball/england/master/{season}/1-premierleague.txt",
     "es.1": "https://raw.githubusercontent.com/openfootball/espana/master/{season}/1-liga.txt",
     "it.1": "https://raw.githubusercontent.com/openfootball/italy/master/{season}/1-seriea.txt",
     "de.1": "https://raw.githubusercontent.com/openfootball/deutschland/master/{season}/1-bundesliga.txt",
+    "uefa.cl": "https://raw.githubusercontent.com/openfootball/champions-league/master/{season}/cl.txt",
 }
 
 _MONTHS = {m: i for i, m in enumerate(
@@ -184,9 +193,31 @@ _TXT_DATE = re.compile(
     r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:\s+(\d{4}))?\s*$")
 # 未开赛："20:00  Arsenal FC              v Coventry City FC"
 _TXT_FIXTURE = re.compile(r"^\s+(?:(\d{1,2}):(\d{2})\s+)?(\S.*?)\s+v\s+(\S.*?)\s*$")
-# 已完赛："19:00   Liverpool  4-2 (1-0)  Bournemouth"，半场比分可有可无
+# 已完赛（各国联赛源，如 england/espana/italy/deutschland）：
+# "19:00   Liverpool  4-2 (1-0)  Bournemouth"——没有 "v"，半场比分可有可无
 _TXT_RESULT = re.compile(
     r"^\s+(?:(\d{1,2}):(\d{2})\s+)?(\S.*?)\s+(\d{1,2})-(\d{1,2})(?:\s+\([\d\-]+\))?\s+(\S.*?)\s*$")
+# 已完赛（champions-league 源）：队名顺序跟联赛源不一样，中间带字面的 " v "——
+# "Athletic Club (ESP)  v  Arsenal FC (ENG)  0-2 (0-0)"。用上面那条 _TXT_RESULT
+# 去套这种行会出错：它的"半场比分"可选组要求组后面还有空白+队名，这里没有
+# （比分是最后一段），于是那个可选组匹配失败又回溯，最终把 " v 对方队名" 也
+# 吞进第一支队伍、把 "(0-0)" 错当成第二支队伍——两支队名全部错位。
+# 所以欧冠这种"v 在比分前面"的格式必须单独一条规则，在 _TXT_RESULT 之前先试。
+#
+# 淘汰赛加时/点球会在比分后面追加标注，两种真实见过的写法：
+#   "3-2 a.e.t. (3-0, 1-0)"            —— 加时赛，3-2 已经是最终真实进球比分
+#   "4-3 pen. 1-1 a.e.t. (1-1, 0-1)"   —— 点球淘汰，4-3 是点球大战比分（不是
+#                                          进球），真正的比赛进球比分是点球
+#                                          大战比分后面那对 "1-1"
+# 取分逻辑：有 "pen." 就用它后面那对数字（真实进球数），没有就用最前面那对
+# （不管有没有 "a.e.t."，因为"加时后"的比分本身就是真实进球数）。末尾的
+# 分段比分（半场/加时分段）只做展示用，不影响这里，直接忽略。
+_TXT_RESULT_V = re.compile(
+    r"^\s+(?:(\d{1,2}):(\d{2})\s+)?(\S.*?)\s+v\s+(\S.*?)\s+"
+    r"(\d{1,2})-(\d{1,2})"
+    r"(?:\s+pen\.\s+(\d{1,2})-(\d{1,2}))?"
+    r"(?:\s+a\.e\.t\.)?"
+    r"(?:\s+\([^)]*\))?\s*$")
 _TXT_ROUND = re.compile(r"^\s*[▪»]\s*(.+?)\s*$")
 
 
@@ -248,6 +279,19 @@ def parse_openfootball_txt(text: str) -> list:
             continue
 
         if cur_date is None:
+            continue
+
+        m = _TXT_RESULT_V.match(line)
+        if m:
+            h, mi, t1, t2, sh, sa, psh, psa = m.groups()
+            if h:
+                cur_time = f"{int(h):02d}:{mi}"
+            # 有点球大战比分的话，前面那对是点球（不是进球），真正的
+            # 进球比分是 "pen." 后面那对；见 _TXT_RESULT_V 上方注释。
+            fh, fa = (psh, psa) if psh else (sh, sa)
+            out.append({"date": cur_date.isoformat(), "round": cur_round, "time": cur_time,
+                        "team1": t1.strip(), "team2": t2.strip(),
+                        "score": {"ft": [int(fh), int(fa)]}})
             continue
 
         m = _TXT_RESULT.match(line)
