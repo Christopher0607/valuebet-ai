@@ -39,14 +39,26 @@ _TRAINING_DIR = os.path.join(os.path.dirname(__file__), "..", "training")
 _PARAM_FILES = {
     "international": "fitted_parameters.json",
     "club": "fitted_parameters_club.json",
+    "mls": "fitted_parameters_mls.json",
+    "efl_cup": "fitted_parameters_efl_cup.json",
 }
 
 # 赛事代码 → 参数作用域。新增赛事时在这里登记，忘了登记会走 fallback 兜底，
 # 产出的是所有球队都一样的空洞预测（不会报错，所以要留意）。
+#
+# mls / efl_cup 各自单独一张表，没有并进 club 那张联合表：club 表的桥接
+# 逻辑（四大联赛+欧冠联合训练）成立的前提是训练池里有真正跨联赛的对局
+# 把不同联赛的尺子锚在一起。美职联不跟这四个联赛有任何交叉赛事，联赛杯
+# 虽然后期轮次有英超球队参战，但数据源（API-Football 免费档）只有
+# 2022-2024，跟 club 表的训练区间未必对齐，且联赛杯参赛的英冠/英甲/英乙
+# 球队本来就不在 club 表里——勉强拼进同一张表反而会产生"看似可比、实则
+# 没有真实桥接对局支撑"的假象。各自独立训练更诚实。
 COMPETITION_SCOPE = {
     "wc2026": "international",
     "epl": "club", "laliga": "club", "seriea": "club", "bundesliga": "club",
     "ucl": "club",
+    "mls": "mls",
+    "efl_cup": "efl_cup",
 }
 
 # 世界杯是中立场地赛制，主场优势恒为0；俱乐部联赛是真实主客场，要启用。
@@ -54,6 +66,8 @@ COMPETITION_NEUTRAL = {
     "wc2026": True,
     "epl": False, "laliga": False, "seriea": False, "bundesliga": False,
     "ucl": False,     # 欧冠只有决赛在中立场，训练数据里已按轮次区分，这里取多数情况
+    "mls": False,
+    "efl_cup": False,  # 联赛杯只有决赛中立场，跟欧冠同样处理，取多数情况
 }
 
 _PARAM_CACHE = {}

@@ -20,6 +20,12 @@ from sqlalchemy.orm import Session
 
 from . import models
 from .model import dixon_coles, calc_rps, scope_for_competition, neutral_for_competition
+from . import api_football, odds_api
+
+# 走 API-Football + The Odds API 这条完全独立路径的赛事代码——历史比分从
+# API-Football 拿（见 api_football.py 顶部注释：免费档只开放 2022-2024），
+# 未来赛程从 The Odds API 拿（不受那个赛季限制，但也不含任何赔率数据）。
+_ODDS_TXT_COMPETITIONS = {"mls", "efl_cup"}
 
 
 import re
@@ -801,8 +807,12 @@ def run_full_update(db: Session) -> dict:
                 # 发布），不该连累其他赛事。实测踩过：欧冠 404 导致整个事务回滚，
                 # 另外5个赛事的预测一条都没生成。
                 try:
-                    played = fetch_results(comp)
-                    upcoming = fetch_upcoming(comp)
+                    if comp.code in _ODDS_TXT_COMPETITIONS:
+                        played = api_football.fetch_training_matches(comp.code)
+                        upcoming = odds_api.fetch_upcoming_events(comp.code)
+                    else:
+                        played = fetch_results(comp)
+                        upcoming = fetch_upcoming(comp)
                     total_matches_updated += upsert_matches(db, comp, played, upcoming)
                 except Exception as ce:
                     db.rollback()

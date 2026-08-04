@@ -122,6 +122,12 @@ def _seed_default_competition():
             ("seriea", "Serie A", "意甲", f"{BASE}/it.1.json", True),
             ("bundesliga", "Bundesliga", "德甲", f"{BASE}/de.1.json", True),
             ("ucl", "UEFA Champions League", "欧冠", f"{BASE}/uefa.cl.json", True),
+            # 这两个数据源不是 openfootball，走完全不同的抓取路径（见
+            # updater.py 的 run_full_update 里对 code 的分支判断），data_source
+            # 这里只是个非空占位（get_active_competitions 靠它是否为 None
+            # 过滤），不会被当成 URL 模板去替换 {season} 或请求。
+            ("mls", "Major League Soccer", "美职联", "api-football:mls", True),
+            ("efl_cup", "English League Cup", "英格兰联赛杯", "api-football:efl_cup", True),
         ]
         for code, name, name_zh, src, active in specs:
             existing = db.query(Competition).filter_by(code=code).first()
