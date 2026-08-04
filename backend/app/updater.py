@@ -579,6 +579,31 @@ def dedupe_alias_renamed_matches(db: Session) -> int:
                 keeper.team1, keeper.team2 = ct1, ct2
 
     db.commit()
+
+    # 合并之后要查一种脏数据：同一注串关的两条腿指向了同一场比赛。
+    #
+    # 怎么产生的：/api/parlay-bets 是按 match_id 校验"同一场不能出现两次"的，
+    # 而重复的那两条记录 match_id 不同（一条旧队名、一条规范队名），校验
+    # 放行了。用户如果把界面上那两张长得一样的卡都选进同一注，就会建出
+    # 一个「把同一件事当成两个独立事件连乘」的串关——概率被平方，记录本身
+    # 就是错的。去重把两条腿指到同一场之后，这个错误才浮出水面。
+    #
+    # 刻意不自动删腿：那是在改用户已经下过的投注记录，比留着一条标记出来的
+    # 脏数据更糟。只报出来，让用户自己决定要不要作废重记。
+    suspects = []
+    leg_rows = db.query(models.ParlayLeg.parlay_bet_id, models.ParlayLeg.match_id).all()
+    by_parlay = {}
+    for pid, mid in leg_rows:
+        by_parlay.setdefault(pid, []).append(mid)
+    for pid, mids in by_parlay.items():
+        if len(set(mids)) != len(mids):
+            suspects.append(pid)
+    if suspects:
+        logging.getLogger("valuebet.updater").warning(
+            "[dedupe] 以下串关注单的两条腿指向同一场比赛，记录的联合概率是错的"
+            "（同一件事被当成两个独立事件连乘），建议作废重记: parlay_bet_id=%s",
+            suspects)
+
     return removed
 
 
