@@ -732,7 +732,7 @@ function AppInner() {
         )}
 
         {!loading && tab === "parlay" && settings && (
-          <ParlaySuggestTab upcoming={upcoming} settings={settings} onRefresh={() => loadAll(true)} />
+          <ParlaySuggestTab upcoming={upcoming} settings={settings} parlayBets={parlayBets} onRefresh={() => loadAll(true)} />
         )}
 
         {!loading && tab === "backtest" && (
@@ -1821,7 +1821,7 @@ function ChartTab({ bankroll, settings }) {
 }
 
 // ── Parlay Suggest Tab ──────────────────────────────────────
-function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
+function ParlaySuggestTab({ upcoming, settings, parlayBets, onRefresh }) {
   const zhTeam = useZhTeam();
   const [selected, setSelected] = useState({});   // { matchId: true }
   // 赔率从后端已保存的记录初始化——之前这里是空对象，赔率只活在 React state 里，
@@ -1881,6 +1881,23 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
     const comp = m.competition_name ? `${m.competition_name} · ` : "";
     return `${who}（${zhTeam(m.team1)} vs ${zhTeam(m.team2)}）· ${comp}${fdt(m.date)}`;
   }
+
+  // 判断"这组推荐是不是已经下过注了"——按 (match_id, outcome) 这套腿的
+  // 组成来比对，不看队名文本，中英文切换、翻译表有没有覆盖到都不影响
+  // 判断结果。虚拟盘、实盘只要腿的组合一样就算重复，不区分 kind——
+  // 用户关心的是"这注我是不是已经下过"，不是"我是不是已经用真钱下过"。
+  function legSetSignature(legs) {
+    return legs.map(l => `${l.match_id}:${l.outcome}`).sort().join("|");
+  }
+  const betSignatures = useMemo(() => {
+    const map = new Map();
+    for (const p of parlayBets || []) {
+      const sig = legSetSignature(p.legs);
+      if (!map.has(sig)) map.set(sig, []);
+      map.get(sig).push(p.kind);
+    }
+    return map;
+  }, [parlayBets]);
 
   const allSelected = withOdds.length > 0 && withOdds.every(m => selected[m.id]);
   function toggleSelectAll() {
@@ -2105,8 +2122,15 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
       {result && result.status === "ok" && (
         <div>
           <SL>推荐组合（共评估 {result.n_combinations_evaluated} 种组合，{result.n_candidates} 条候选正EV腿）</SL>
-          {result.combinations.map((combo, i) => (
-            <div key={i} style={{ background: C.card, border: `1px solid ${combo.tag ? C.accent + "66" : C.border}`, borderRadius: 10, marginBottom: 10, padding: "12px 14px" }}>
+          {result.combinations.map((combo, i) => {
+            const dupKinds = betSignatures.get(legSetSignature(combo.legs));
+            return (
+            <div key={i} style={{ background: C.card, border: `1px solid ${dupKinds ? C.gold + "88" : combo.tag ? C.accent + "66" : C.border}`, borderRadius: 10, marginBottom: 10, padding: "12px 14px" }}>
+              {dupKinds && (
+                <div style={{ fontSize: 11, fontWeight: 800, color: C.gold, marginBottom: 8 }}>
+                  ⚠️ 已下过注（{[...new Set(dupKinds)].map(k => k === "real" ? "实盘" : "虚拟盘").join("+")}）· 同样的腿，避免重复下注
+                </div>
+              )}
               {combo.tag && (
                 <div style={{ fontSize: 11, fontWeight: 800, color: C.accent, marginBottom: 8 }}>{combo.tag}</div>
               )}
@@ -2177,7 +2201,8 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
