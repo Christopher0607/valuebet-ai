@@ -73,7 +73,10 @@ const realPnlRoi = (bets, parlays) => settledPnlRoi(bets, parlays, "stake_real",
 // ——Bet 和 RealBet 是两张不同的表。虚拟盘页目前还没有串关列表（虚拟串关
 // 存在，但没有 UI 展示），所以这里固定传空数组，口径先只到单场，跟这一页
 // 「总注数」等其余统计目前的范围一致。
-const virtualPnlRoi = (bets) => settledPnlRoi(bets, [], "stake", "pnl");
+// parlays 可选——虚拟盘页自己那张卡片目前还没有虚拟串关列表 UI，沿用
+// 老口径不传；总览栏这边算总盈亏时手上已经有 virtualParlays 了，传进来
+// 才不会漏掉虚拟串关的盈亏，口径跟「实盘盈亏」（含真实串关）对齐。
+const virtualPnlRoi = (bets, parlays = []) => settledPnlRoi(bets, parlays, "stake", "pnl");
 
 // 资金曲线按天拆出"哪天赚了/亏了多少"。bankroll_summary 的 series 是按
 // 资金事件（每笔结算）挂点的，不是按天——同一天可能有好几个点，也可能
@@ -683,6 +686,10 @@ function AppInner() {
         // 不再读 bankroll.real.total_pnl——那个是全局的，混在这排筛过的
         // 数字里会把某个联赛的亏损用另一个联赛的盈利盖掉。
         const { pnl: realPnl } = realPnlRoi(shownRealBets, realParlays);
+        // 跟「实盘盈亏」对称补上——原来这一栏只有虚拟下注的注数，没有虚拟
+        // 盈亏，得单独去「虚拟盘」页才看得到整体表现。含虚拟串关，口径
+        // 跟 realPnl 一致（都是已结算单场+串关的净盈亏）。
+        const { pnl: virtualPnl } = virtualPnlRoi(shownBets, virtualParlays);
         return (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", background: C.border, gap: 1 }}>
           {[
@@ -694,6 +701,7 @@ function AppInner() {
             { v: Math.round(pendingStake).toLocaleString(), l: "投注金额", c: C.gold },
             { v: Math.round(turnover).toLocaleString(), l: "累计流水", c: C.blue },
             { v: fnum(realPnl), l: "实盘盈亏", c: realPnl >= 0 ? C.accent : C.red },
+            { v: fnum(virtualPnl), l: "虚拟盈亏", c: virtualPnl >= 0 ? C.accent : C.red },
           ].map(({ v, l, c }) => (
             <div key={l} style={{ background: C.surface, padding: "9px 8px", textAlign: "center" }}>
               <div style={{ fontSize: 16, fontWeight: 900, color: c, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{v}</div>
