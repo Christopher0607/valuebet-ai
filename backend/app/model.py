@@ -595,6 +595,8 @@ def suggest_parlays(match_odds_list: list, min_legs: int, max_legs: int,
                 "ev": round(combo_ev, 4),
                 "kelly_pct": round(combo_kelly, 4),
                 "weakest_leg_label": weakest["label"],
+                "weakest_leg_match_id": weakest["match_id"],
+                "weakest_leg_outcome": weakest["outcome"],
                 "weakest_leg_prob": weakest["prob"],
                 "risk_ratio_vs_weakest_leg": round(joint_prob / weakest["prob"], 3) if weakest["prob"] > 0 else 0,
             })

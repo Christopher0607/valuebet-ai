@@ -1853,6 +1853,57 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
 
   const selectedIds = Object.keys(selected).filter(id => selected[id]).map(Number);
 
+  // 候选池只留"已经手动输入过赔率"的比赛——串关本来就要先在单场那边
+  // （MatchCard）把赔率填进去、存到后端，才谈得上"选它下注"；把还没
+  // 定价的比赛也混在列表里，找起来反而费劲。平局赔率允许缺（有些用户
+  // 只填主客），主客两边任一没填就当没定价，跟单场那边的校验口径一致
+  // （见 MatchCard 的 compute()：!h || !a 直接不算）。
+  const withOdds = useMemo(
+    () => upcoming.filter(m => m.latest_odds?.odds_home && m.latest_odds?.odds_away),
+    [upcoming]
+  );
+
+  const matchById = useMemo(
+    () => Object.fromEntries(upcoming.map(m => [m.id, m])),
+    [upcoming]
+  );
+
+  // 把后端拼好的英文腿标签换成"中文队名 + 联赛 + 日期"——后端那条 label
+  // 是格式化字符串（球队名 + vs），字符串层面翻译太脆，直接用 match_id
+  // 查回原始比赛对象重新拼一遍更可靠。查不到（理论上不该发生）就退回
+  // 后端原文，不让这条腿从界面上消失。
+  function legDisplay(matchId, outcome) {
+    const m = matchById[matchId];
+    if (!m) return null;
+    const who = outcome === "home" ? zhTeam(m.team1)
+      : outcome === "away" ? zhTeam(m.team2)
+      : "平局";
+    const comp = m.competition_name ? `${m.competition_name} · ` : "";
+    return `${who}（${zhTeam(m.team1)} vs ${zhTeam(m.team2)}）· ${comp}${fdt(m.date)}`;
+  }
+
+  const allSelected = withOdds.length > 0 && withOdds.every(m => selected[m.id]);
+  function toggleSelectAll() {
+    if (allSelected) {
+      setSelected(s => {
+        const next = { ...s };
+        for (const m of withOdds) delete next[m.id];
+        return next;
+      });
+    } else {
+      setSelected(s => ({ ...s, ...Object.fromEntries(withOdds.map(m => [m.id, true])) }));
+    }
+  }
+
+  function updateMinLegs(v) {
+    setMinLegs(v);
+    setMaxLegs(m => Math.max(m, v));
+  }
+  function updateMaxLegs(v) {
+    setMaxLegs(v);
+    setMinLegs(m => Math.min(m, v));
+  }
+
   // 凯利比例的显示名，跟设置里的实际值走
   const kellyLabel = {
     0.25: "四分之一凯利", 0.5: "半凯利",
@@ -1962,24 +2013,37 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 11, color: C.textDim }}>最少腿数:</span>
-          <select value={minLegs} onChange={e => setMinLegs(+e.target.value)}
+          {/* 最少/最多两个下拉互相夹住对方——改最多到比当前最少还低（比如
+              两边都设成2，串死2腿）时把最少也拉下来，反过来同理，不然会
+              选出一个后端直接拒绝的 min>max 组合，用户不知道为什么报错。 */}
+          <select value={minLegs} onChange={e => updateMinLegs(+e.target.value)}
             style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 8px", color: C.text, fontSize: 12 }}>
-            {[2, 3, 4, 5].map(n => <option key={n} value={n}>{n}</option>)}
+            {[2, 3, 4, 5, 6, 7, 8].map(n => <option key={n} value={n}>{n}</option>)}
           </select>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 11, color: C.textDim }}>最多腿数:</span>
-          <select value={maxLegs} onChange={e => setMaxLegs(+e.target.value)}
+          <select value={maxLegs} onChange={e => updateMaxLegs(+e.target.value)}
             style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 8px", color: C.text, fontSize: 12 }}>
-            {[3, 4, 5, 6, 7, 8].map(n => <option key={n} value={n}>{n}</option>)}
+            {[2, 3, 4, 5, 6, 7, 8].map(n => <option key={n} value={n}>{n}</option>)}
           </select>
         </div>
-        <span style={{ fontSize: 11, color: C.textDim }}>已选 {selectedIds.length} 场</span>
+        <span style={{ fontSize: 11, color: C.textDim }}>已选 {selectedIds.length} / {withOdds.length} 场（已定价）</span>
+        {withOdds.length > 0 && (
+          <button onClick={toggleSelectAll}
+            style={{ background: "none", border: `1px solid ${C.accent}`, color: C.accent,
+                     borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 700 }}>
+            {allSelected ? "取消全选" : "全选"}
+          </button>
+        )}
       </div>
 
       {upcoming.length === 0 && <Empty text="暂无即将赛事可供选择" />}
+      {upcoming.length > 0 && withOdds.length === 0 && (
+        <Empty text="即将赛事都还没有输入赔率——先在「单场」里给要考虑的比赛填上赔率，才会出现在这里" />
+      )}
 
-      <DayGroups matches={upcoming} selectedIds={new Set(selectedIds)} renderMatch={m => {
+      <DayGroups matches={withOdds} selectedIds={new Set(selectedIds)} renderMatch={m => {
         const isSel = !!selected[m.id];
         const p = m.prediction;
         return (
@@ -1991,7 +2055,9 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
                 </div>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 13 }}>{zhTeam(m.team1)} <span style={{ color: C.textDim, fontWeight: 400, fontSize: 12 }}>vs</span> {zhTeam(m.team2)}</div>
-                  <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>{fdt(m.date)} · {m.round}</div>
+                  <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>
+                    {m.competition_name && <span style={{ color: C.accent }}>{m.competition_name}</span>} · {fdt(m.date)}{m.round ? ` · ${m.round}` : ""}
+                  </div>
                 </div>
               </div>
               {p && <span style={{ fontSize: 10, color: C.textDim }}>主{pct(p.prob_home)} 平{pct(p.prob_draw)} 客{pct(p.prob_away)}</span>}
@@ -2054,12 +2120,12 @@ function ParlaySuggestTab({ upcoming, settings, onRefresh }) {
                 <MiniStat label={`${kellyLabel} 建议`} val={combo.kelly_amount ? combo.kelly_amount.toLocaleString() : "0"} color={C.purple} sub={pct(combo.kelly_pct)} />
               </div>
               <div style={{ fontSize: 10, color: C.textDim, marginBottom: 8 }}>
-                相对最弱一腿（{combo.weakest_leg_label} {pct(combo.weakest_leg_prob)}）命中率打了 {(combo.risk_ratio_vs_weakest_leg * 10).toFixed(1)} 折
+                相对最弱一腿（{legDisplay(combo.weakest_leg_match_id, combo.weakest_leg_outcome) || combo.weakest_leg_label} {pct(combo.weakest_leg_prob)}）命中率打了 {(combo.risk_ratio_vs_weakest_leg * 10).toFixed(1)} 折
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
                 {combo.legs.map((leg, j) => (
                   <div key={j} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, background: C.bg, borderRadius: 6, padding: "6px 9px" }}>
-                    <span>{leg.label}</span>
+                    <span>{legDisplay(leg.match_id, leg.outcome) || leg.label}</span>
                     <span style={{ color: C.textDim }}>@{leg.odds} · {pct(leg.prob)}</span>
                   </div>
                 ))}
