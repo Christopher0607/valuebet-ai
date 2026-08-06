@@ -81,22 +81,43 @@ def build_team_index(matches, min_matches=MIN_MATCHES_FOR_FIT):
     return eligible, counts
 
 
-def precompute_match_arrays(matches, team_idx, reference_date):
+def precompute_match_arrays(matches, team_idx, reference_date, use_fallback_opponent=False):
     """
     把比赛列表转换成 NumPy 数组，供向量化似然函数使用。
     这一步只需要做一次；之后优化器反复调用似然函数时，直接用数组运算，
     不再逐场循环 Python 对象 —— 这是把训练从"卡住不动"变成"几秒跑完"的关键。
+
+    use_fallback_opponent：默认 False，跟原行为完全一致——只要有一队不在
+    team_idx 里，整场跳过（club/international 用这个默认值，行为不受影响）。
+
+    True 时改成：两队都不在 team_idx 才跳过；只有一队不在的场次不再整场
+    丢弃，不在的那队映射到一个共享的"替补"节点（索引固定 = len(team_idx)，
+    attack/defense 钉死在 0，不参与优化——正是 FALLBACK_ATTACK/DEFENSE 在
+    预测时用的同一个惯例），让在册的那支队伍仍能从这场比赛的真实进球数里
+    获得信息，而不是白白丢掉。
+
+    这是为联赛杯这类淘汰赛准备的——实测 Bristol City「够格拟合」（≥6场）
+    的比赛里，有一半因为对手自己场次不够被整场丢弃，真正喂进模型的只有
+    3场；单靠调高正则化压不住这种"半数信息被砍掉"的问题，只能从源头
+    把这些比赛的部分信息用回来。见 neg_log_likelihood_vectorized/gradient
+    里对应的"替补节点"实现。
     """
     team_to_i = {t: i for i, t in enumerate(team_idx)}
+    fallback_i = len(team_idx)   # 替补节点索引，attack/defense 固定为 0
     home_i, away_i, hg, ag, weight, neutral_mask = [], [], [], [], [], []
 
     skipped = 0
     for m in matches:
-        if m["home"] not in team_to_i or m["away"] not in team_to_i:
+        h_known = m["home"] in team_to_i
+        a_known = m["away"] in team_to_i
+        if not h_known and not a_known:
             skipped += 1
             continue
-        home_i.append(team_to_i[m["home"]])
-        away_i.append(team_to_i[m["away"]])
+        if not use_fallback_opponent and not (h_known and a_known):
+            skipped += 1
+            continue
+        home_i.append(team_to_i[m["home"]] if h_known else fallback_i)
+        away_i.append(team_to_i[m["away"]] if a_known else fallback_i)
         hg.append(m["hg"])
         ag.append(m["ag"])
         weight.append(time_weight(m["date"], reference_date))
@@ -125,9 +146,16 @@ def neg_log_likelihood_vectorized(params, arrays, n_teams, reg_strength=0.01):
     每队上百场比赛的规模调的，训练脚本不传时行为完全不变。样本稀薄的
     赛事（比如联赛杯，见 train_mle_leagues.py）需要更强的正则化，见那边
     的推导。
+
+    attack/defense 在末尾各补一个固定为 0 的"替补"槽位（下标 n_teams），
+    对应 precompute_match_arrays(use_fallback_opponent=True) 里映射过去的
+    对手场次不够的球队——这个槽位不在 params 里，不参与优化，纯粹是给
+    home_i/away_i 里可能出现的 n_teams 下标一个能查到的值。没启用替补
+    节点时 home_i/away_i 永远不会取到 n_teams，多出来的这个 0 完全不影响
+    任何计算，club/international 两张表的结果不会有任何变化。
     """
-    attack = params[:n_teams]
-    defense = params[n_teams:2*n_teams]
+    attack = np.concatenate([params[:n_teams], [0.0]])
+    defense = np.concatenate([params[n_teams:2*n_teams], [0.0]])
     home_adv = params[2*n_teams]
 
     home_i, away_i = arrays["home_i"], arrays["away_i"]
@@ -165,9 +193,15 @@ def neg_log_likelihood_gradient(params, arrays, n_teams, reg_strength=0.01):
     reg_strength 必须跟 neg_log_likelihood_vectorized 传入同一个值，否则梯度
     校验（verify_gradient_correctness）会跟目标函数对不上而报错——两边默认值
     保持一致就是为了不需要每个调用点都记得同步传两遍。
+
+    grad_attack/grad_defense 跟目标函数一样多分配一个"替补"槽位（下标
+    n_teams），np.add.at 往这个槽位累加的梯度最后直接丢弃——替补节点的
+    attack/defense 钉死在 0，不是真正的优化变量，不需要、也不应该更新它。
+    没启用替补节点时这个槽位永远是 0，切片丢弃前后数值完全一样，
+    club/international 的梯度不受影响。
     """
-    attack = params[:n_teams]
-    defense = params[n_teams:2*n_teams]
+    attack = np.concatenate([params[:n_teams], [0.0]])
+    defense = np.concatenate([params[n_teams:2*n_teams], [0.0]])
     home_adv = params[2*n_teams]
 
     home_i, away_i = arrays["home_i"], arrays["away_i"]
@@ -182,8 +216,8 @@ def neg_log_likelihood_gradient(params, arrays, n_teams, reg_strength=0.01):
     resid_home = w * (hg - lam)   # 主队进球的"真实-预期"残差
     resid_away = w * (ag - mu)    # 客队进球的"真实-预期"残差
 
-    grad_attack = np.zeros(n_teams)
-    grad_defense = np.zeros(n_teams)
+    grad_attack = np.zeros(n_teams + 1)
+    grad_defense = np.zeros(n_teams + 1)
 
     # a_h 只受主队进球残差影响；a_a 只受客队进球残差影响
     np.add.at(grad_attack, home_i, -resid_home)
@@ -191,6 +225,9 @@ def neg_log_likelihood_gradient(params, arrays, n_teams, reg_strength=0.01):
     # d_a（客队防守）出现在 lam 的公式里，带负号；d_h（主队防守）出现在 mu 的公式里，带负号
     np.add.at(grad_defense, away_i, resid_home)
     np.add.at(grad_defense, home_i, resid_away)
+
+    grad_attack = grad_attack[:n_teams]
+    grad_defense = grad_defense[:n_teams]
 
     grad_home_adv = -np.sum(resid_home * (1.0 - neutral_mask))
 
@@ -264,7 +301,8 @@ def neg_log_likelihood(params, matches, team_idx, reference_date):
     return total_nll + reg
 
 
-def fit_parameters(matches, team_idx, reference_date=None, reg_strength=0.01):
+def fit_parameters(matches, team_idx, reference_date=None, reg_strength=0.01,
+                    use_fallback_opponent=False):
     """跑 MLE 优化，返回每支球队的进攻力、防守力，以及主场优势常数。
     使用向量化似然函数 + 解析梯度，在几万场比赛规模下几秒内完成。
     此前用有限差分梯度（不提供解析梯度时scipy的默认行为）在523维参数下
@@ -274,12 +312,17 @@ def fit_parameters(matches, team_idx, reference_date=None, reg_strength=0.01):
     规模调的，不传时行为不变。样本极稀薄的赛事（联赛杯这种淘汰赛，一队
     往往只有个位数场次）需要单独调高，见 train_mle_leagues.py 里的推导——
     不调的话，几场比赛的偶然结果就能把 attack 拉到 -4 这种量级
-    （意味着"这支球队几乎不可能进球"，不是任何真实球队的合理状态）。"""
+    （意味着"这支球队几乎不可能进球"，不是任何真实球队的合理状态）。
+
+    use_fallback_opponent：默认 False，行为不变（club/international 用这个
+    默认值）。True 时把「对手场次不够、整场被跳过」的比赛部分利用起来，
+    见 precompute_match_arrays 的说明。"""
     if reference_date is None:
         reference_date = date.today()
 
     n = len(team_idx)
-    arrays = precompute_match_arrays(matches, team_idx, reference_date)
+    arrays = precompute_match_arrays(matches, team_idx, reference_date,
+                                      use_fallback_opponent=use_fallback_opponent)
     print(f"   预计算完成：{len(arrays['home_i'])} 场比赛纳入似然计算，"
           f"{arrays['n_skipped']} 场因球队样本不足被跳过")
 

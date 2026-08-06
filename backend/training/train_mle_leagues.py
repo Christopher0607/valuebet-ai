@@ -106,7 +106,13 @@ def train_one(league_code: str):
     print(f"   场均每队 {avg_matches_per_team:.1f} 场比赛，正则化系数 reg_strength={reg_strength:.4f}"
           f"（club 表基准 0.01，按密度反比放大）")
 
-    attack, defense, home_adv, nll = fit_parameters(matches, team_idx, reg_strength=reg_strength)
+    # 场次不够独立拟合的球队（比如 Bristol City 遇到的 Coventry、
+    # Oxford United）不再让它们的对手也白白丢掉那场比赛——用「替补」节点
+    # （attack/defense 钉在0）部分利用，见 train_mle.py 里
+    # precompute_match_arrays 的推导。club/international 没传这个参数，
+    # 默认 False，行为不受影响。
+    attack, defense, home_adv, nll = fit_parameters(
+        matches, team_idx, reg_strength=reg_strength, use_fallback_opponent=True)
     print(f"   拟合完成，主场优势 = {home_adv:.4f}")
 
     out = {
