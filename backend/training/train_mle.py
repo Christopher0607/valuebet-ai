@@ -113,13 +113,18 @@ def precompute_match_arrays(matches, team_idx, reference_date):
     }
 
 
-def neg_log_likelihood_vectorized(params, arrays, n_teams):
+def neg_log_likelihood_vectorized(params, arrays, n_teams, reg_strength=0.01):
     """
     向量化版本，数学上跟 neg_log_likelihood 完全等价，
     但用 NumPy 数组运算替代逐场 Python 循环。
     在 32,372 场比赛规模下，这个版本单次调用约几毫秒，
     而循环版本单次调用约 0.15 秒 —— 差距会随比赛数量线性放大，
     正是之前训练卡住不动的根本原因之一。
+
+    reg_strength：L2 正则化系数，默认 0.01 是给 club/international 这种
+    每队上百场比赛的规模调的，训练脚本不传时行为完全不变。样本稀薄的
+    赛事（比如联赛杯，见 train_mle_leagues.py）需要更强的正则化，见那边
+    的推导。
     """
     attack = params[:n_teams]
     defense = params[n_teams:2*n_teams]
@@ -138,11 +143,11 @@ def neg_log_likelihood_vectorized(params, arrays, n_teams):
     ll_away = ag * np.log(mu) - mu - gammaln(ag + 1)
 
     total_nll = -np.sum(w * (ll_home + ll_away))
-    reg = 0.01 * np.sum(params[:2*n_teams] ** 2)
+    reg = reg_strength * np.sum(params[:2*n_teams] ** 2)
     return total_nll + reg
 
 
-def neg_log_likelihood_gradient(params, arrays, n_teams):
+def neg_log_likelihood_gradient(params, arrays, n_teams, reg_strength=0.01):
     """
     解析梯度 —— 这是解决优化卡住/超时的关键修复，不是把 maxfun 调大。
     没有这个函数时，L-BFGS-B 只能用有限差分去估计 523 维的梯度，
@@ -156,6 +161,10 @@ def neg_log_likelihood_gradient(params, arrays, n_teams):
       （因为 d_a 前面带负号，链式法则翻转符号）
       同理可得 a_a, d_h, home_adv 的贡献。
       每支球队的总梯度 = 该队参与的所有比赛贡献之和（用 np.add.at 做分组累加）。
+
+    reg_strength 必须跟 neg_log_likelihood_vectorized 传入同一个值，否则梯度
+    校验（verify_gradient_correctness）会跟目标函数对不上而报错——两边默认值
+    保持一致就是为了不需要每个调用点都记得同步传两遍。
     """
     attack = params[:n_teams]
     defense = params[n_teams:2*n_teams]
@@ -186,12 +195,12 @@ def neg_log_likelihood_gradient(params, arrays, n_teams):
     grad_home_adv = -np.sum(resid_home * (1.0 - neutral_mask))
 
     grad = np.concatenate([grad_attack, grad_defense, [grad_home_adv]])
-    # 正则化项的梯度：d(0.01 * sum(p^2))/dp = 0.02*p，只作用在 attack/defense 上
-    grad[:2*n_teams] += 0.02 * params[:2*n_teams]
+    # 正则化项的梯度：d(reg_strength * sum(p^2))/dp = 2*reg_strength*p，只作用在 attack/defense 上
+    grad[:2*n_teams] += 2 * reg_strength * params[:2*n_teams]
     return grad
 
 
-def verify_gradient_correctness(arrays, n_teams, n_trials=3):
+def verify_gradient_correctness(arrays, n_teams, n_trials=3, reg_strength=0.01):
     """用 scipy 自带的数值梯度做基准，交叉验证手推解析梯度是否正确。
     训练脚本每次运行都会先跑这个校验，如果不通过就直接中止，
     不会用一个没验证过的梯度公式去跑真实优化。
@@ -212,8 +221,8 @@ def verify_gradient_correctness(arrays, n_teams, n_trials=3):
     worst_detail = None
     for _ in range(n_trials):
         x = rng.randn(2*n_teams + 1) * 0.3
-        analytical = neg_log_likelihood_gradient(x, arrays, n_teams)
-        numerical = approx_fprime(x, neg_log_likelihood_vectorized, 1e-7, arrays, n_teams)
+        analytical = neg_log_likelihood_gradient(x, arrays, n_teams, reg_strength)
+        numerical = approx_fprime(x, neg_log_likelihood_vectorized, 1e-7, arrays, n_teams, reg_strength)
         abs_diff = np.abs(analytical - numerical)
         rel_diff = abs_diff / (np.abs(analytical) + 1e-8)
         # 只有绝对误差也不可忽略（>1e-3）且相对误差也偏大（>0.01）时才算真正可疑
@@ -255,11 +264,17 @@ def neg_log_likelihood(params, matches, team_idx, reference_date):
     return total_nll + reg
 
 
-def fit_parameters(matches, team_idx, reference_date=None):
+def fit_parameters(matches, team_idx, reference_date=None, reg_strength=0.01):
     """跑 MLE 优化，返回每支球队的进攻力、防守力，以及主场优势常数。
     使用向量化似然函数 + 解析梯度，在几万场比赛规模下几秒内完成。
     此前用有限差分梯度（不提供解析梯度时scipy的默认行为）在523维参数下
-    实测无法在合理时间内收敛，问题记录见本脚本的调试历史。"""
+    实测无法在合理时间内收敛，问题记录见本脚本的调试历史。
+
+    reg_strength：默认 0.01，是给 club/international 这种每队上百场比赛的
+    规模调的，不传时行为不变。样本极稀薄的赛事（联赛杯这种淘汰赛，一队
+    往往只有个位数场次）需要单独调高，见 train_mle_leagues.py 里的推导——
+    不调的话，几场比赛的偶然结果就能把 attack 拉到 -4 这种量级
+    （意味着"这支球队几乎不可能进球"，不是任何真实球队的合理状态）。"""
     if reference_date is None:
         reference_date = date.today()
 
@@ -268,8 +283,9 @@ def fit_parameters(matches, team_idx, reference_date=None):
     print(f"   预计算完成：{len(arrays['home_i'])} 场比赛纳入似然计算，"
           f"{arrays['n_skipped']} 场因球队样本不足被跳过")
 
+    print(f"   正则化系数 reg_strength={reg_strength}")
     print("   校验解析梯度公式（与数值梯度对比，绝对+相对误差组合判据）...")
-    max_flag, worst_detail = verify_gradient_correctness(arrays, n, n_trials=3)
+    max_flag, worst_detail = verify_gradient_correctness(arrays, n, n_trials=3, reg_strength=reg_strength)
     print(f"   梯度校验结果: {max_flag:.6f}" + (
         f"（可疑维度：绝对误差={worst_detail[1]:.6f}, 相对误差={worst_detail[2]:.6f}）"
         if worst_detail else "（无可疑维度）"
@@ -291,7 +307,7 @@ def fit_parameters(matches, team_idx, reference_date=None):
         neg_log_likelihood_vectorized,
         x0,
         jac=neg_log_likelihood_gradient,   # 提供解析梯度，这是真正的性能修复
-        args=(arrays, n),
+        args=(arrays, n, reg_strength),
         method="L-BFGS-B",
         options={"maxiter": 2000},
     )

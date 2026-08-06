@@ -42,6 +42,22 @@ _NEUTRAL_FINAL_RULE = {
 
 _SCOPE_LABEL = {"mls": "美职联", "efl_cup": "英格兰联赛杯"}
 
+# club 表（四大联赛+欧冠联合训练）用默认正则化系数 0.01，跑出来的球队之间
+# attack 标准差是 0.34，量级合理。这个系数是在场均每队约100场比赛的密度下
+# 调出来的——用同一个系数去拟合场均每队只有个位数场次的联赛杯，正则化
+# 相对数据量太弱，压不住偶然结果，实测 attack 标准差被推到 0.89（比国家队
+# 表——真正跨越百年、包含关岛圣马力诺这种长期弱旅的表——还要离散），
+# 极端值出现 -4.6 这种"这支球队几乎不可能进球"的荒谬数字，起因是
+# Bristol City 这类球队"够格拟合"的比赛数（≥6场）里有一半以上其实是
+# 对手场次不够被整场跳过、真正进入似然计算的只有两三场，几场比赛的
+# 偶然结果被当成了稳定信号。
+#
+# 修法：正则化强度按数据密度反比缩放，让"每场比赛能拉动参数多少"这个
+# 比例在各赛事间大致一致，而不是所有赛事共用同一个为大样本调的固定值。
+# 用 club 表的密度做基准（约100场/队），密度越低、正则化越强；下限锁在
+# 0.01，不会比大样本赛事更松。
+_REFERENCE_MATCHES_PER_TEAM = 100.0
+
 
 def collect(league_code: str) -> list:
     rows = []
@@ -83,7 +99,14 @@ def train_one(league_code: str):
     print(f"   {len(team_idx)} 支球队达标（≥6场，样本量比四大联赛小很多，门槛相应降低），"
           f"{len(counts) - len(team_idx)} 支因场次太少被排除")
 
-    attack, defense, home_adv, nll = fit_parameters(matches, team_idx)
+    # 数据密度越低，正则化越强，见上方 _REFERENCE_MATCHES_PER_TEAM 的推导。
+    # 下限锁在 0.01（club 表的系数），永远不会比大样本赛事更松。
+    avg_matches_per_team = sum(counts[t] for t in team_idx) / len(team_idx)
+    reg_strength = max(0.01, 0.01 * _REFERENCE_MATCHES_PER_TEAM / avg_matches_per_team)
+    print(f"   场均每队 {avg_matches_per_team:.1f} 场比赛，正则化系数 reg_strength={reg_strength:.4f}"
+          f"（club 表基准 0.01，按密度反比放大）")
+
+    attack, defense, home_adv, nll = fit_parameters(matches, team_idx, reg_strength=reg_strength)
     print(f"   拟合完成，主场优势 = {home_adv:.4f}")
 
     out = {
@@ -93,6 +116,7 @@ def train_one(league_code: str):
         "seasons": FREE_TIER_SEASONS,
         "n_matches_used": len(matches),
         "n_teams_fitted": len(team_idx),
+        "reg_strength": round(reg_strength, 4),
         "home_advantage": round(home_adv, 4),
         "final_neg_log_likelihood": round(nll, 2),
         "attack": {k: round(v, 4) for k, v in attack.items()},
