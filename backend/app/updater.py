@@ -29,6 +29,31 @@ from . import api_football, odds_api
 _ODDS_TXT_COMPETITIONS = {"mls", "efl_cup"}
 
 
+def _has_af_historical_data(db: Session, comp: "models.Competition") -> bool:
+    """2022-2024 这三个赛季已经踢完、永远不会再变（api_football.py 顶部
+    注释自己也是这么说的："不变量，第一次抓完就一直在库里，后续失败无损失"）。
+    但代码原来没把这句话当真——每一轮 run_full_update（含定时任务和手动点
+    「立即更新」，一天好几次）都会重新对 API-Football 发 6 个请求（mls+
+    efl_cup 各 3 个赛季），一次都不省，纯粹为了重新确认一遍已经确认过的
+    历史比分。免费档配额有限，这种白打的请求会跟当天真正需要的请求
+    （当前赛季赛果、下一轮赛程）抢配额，实测就是这样把账号打到
+    "Your account is suspended" 的——用户在 API-Football 后台看不出异常，
+    因为那多半是配额触发的临时限制，不是真的账号问题。
+
+    这里只要这个赛事在 2022-2024 窗口内已经有一场"已完赛"的比赛落库，
+    就说明上一次抓取成功过，不需要再抓——upsert_matches 对已有比分的比赛
+    是空操作，重抓不会带来任何新信息。"""
+    from .api_football import FREE_TIER_SEASONS
+    window_start = date_cls(FREE_TIER_SEASONS[0], 1, 1)
+    window_end = date_cls(FREE_TIER_SEASONS[-1] + 1, 1, 1)
+    return db.query(models.Match).filter(
+        models.Match.competition_id == comp.id,
+        models.Match.status == "played",
+        models.Match.date >= window_start,
+        models.Match.date < window_end,
+    ).first() is not None
+
+
 import re
 
 
@@ -943,9 +968,17 @@ def run_full_update(db: Session) -> dict:
                         # 一旦挂了（额度用尽、服务抖动），当前赛季的赛果也跟着
                         # 抓不成，用户的注单就一直挂着不结算——而那批历史数据
                         # 明明早就在库里了，重抓与否根本不影响什么。
+                        #
+                        # 「不影响什么」不该只停在嘴上——已经在库里就真的不再
+                        # 重抓，见 _has_af_historical_data。省下来的不只是几个
+                        # 请求：这三个赛季的数据不变，之前是每轮都重新问一遍
+                        # 已经问过的问题，白白跟当天真正要紧的请求（当前赛季
+                        # 赛果、下一轮赛程）抢免费档配额。
+                        steps = [("当前赛季赛果", lambda: odds_api.fetch_recent_scores(comp.code))]
+                        if not _has_af_historical_data(db, comp):
+                            steps.insert(0, ("历史赛果", lambda: api_football.fetch_training_matches(comp.code)))
                         played, sub_fail = [], []
-                        for label, fn in (("历史赛果", lambda: api_football.fetch_training_matches(comp.code)),
-                                          ("当前赛季赛果", lambda: odds_api.fetch_recent_scores(comp.code))):
+                        for label, fn in steps:
                             try:
                                 played += fn()
                             except Exception as se:
