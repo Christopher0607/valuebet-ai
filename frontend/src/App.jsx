@@ -66,8 +66,16 @@ function settledPnlRoi(bets, parlays, stakeField, pnlField) {
               sp.reduce((s, p) => s + (p.pnl || 0), 0);
   const staked = sb.reduce((s, b) => s + (b[stakeField] || 0), 0) +
                  sp.reduce((s, p) => s + (p.stake || 0), 0);
-  return { pnl, roi: staked ? (pnl / staked) * 100 : null };
+  return { pnl, roi: staked ? (pnl / staked) * 100 : null, staked };
 }
+// 毛盈亏 vs 净盈亏：毛盈亏＝本金×赔率（赢的话是总回款，输的话是0），
+// 净盈亏＝毛盈亏－本金（也就是上面 settledPnlRoi 算出来的 pnl）。
+// 单场注单：赢时 pnl = stake*odds - stake，所以 gross = pnl + stake；
+// 输时 pnl = -stake，gross = pnl + stake = 0，两种情况这一个公式都对，
+// 不需要按赢/输分别处理。汇总多笔时同理：Σgross = Σ(pnl_i + stake_i)
+// = Σpnl_i + Σstake_i = 总净盈亏 + 总本金——所以不需要单独重新算一遍
+// 每笔的毛值，直接拿 settledPnlRoi 已经算出来的 {pnl, staked} 相加即可。
+const grossPnl = (pnl, staked) => pnl + staked;
 const realPnlRoi = (bets, parlays) => settledPnlRoi(bets, parlays, "stake_real", "pnl_real");
 // 虚拟盘的单场注单字段名跟实盘不一样（stake/pnl，不是 stake_real/pnl_real）
 // ——Bet 和 RealBet 是两张不同的表。虚拟盘页目前还没有串关列表（虚拟串关
@@ -663,15 +671,14 @@ function AppInner() {
         }} />
       )}
 
-      {/* 串关（虚拟盘和实盘）算进顶部这条总览栏，跟 RealBetsTab 用同一份过滤。
+      {/* 串关（实盘）算进顶部这条总览栏，跟 RealBetsTab 用同一份过滤。
           原来「实盘下注」只数 shownRealBets.length，串关记在另一张表
           （ParlayBet），从来没被计进来过——用户反馈这里的数字比实际少，
-          就是这个。「虚拟下注」有一模一样的缺口，只是虚拟串关目前没有
-          单独的列表页能看到，不容易被注意到，一起补上。 */}
+          就是这个。这一栏现在只放实盘相关的数字（虚拟盘的注数/盈亏在
+          「虚拟盘」页单独看），毛盈亏/净盈亏见下面 grossPnl 的推导。 */}
       {/* Stats bar */}
       {backtest && (() => {
         const realParlays = shownParlays.filter(p => p.kind === "real");
-        const virtualParlays = shownParlays.filter(p => p.kind === "virtual");
         // 投注金额：现在还压着多少钱没结算——真实下注 + 真实串关里
         // result === "pending" 的本金合计
         const pendingStake =
@@ -685,23 +692,24 @@ function AppInner() {
         // 实盘盈亏同样跟着联赛筛选走，跟这一栏其余几个数口径一致。
         // 不再读 bankroll.real.total_pnl——那个是全局的，混在这排筛过的
         // 数字里会把某个联赛的亏损用另一个联赛的盈利盖掉。
-        const { pnl: realPnl } = realPnlRoi(shownRealBets, realParlays);
-        // 跟「实盘盈亏」对称补上——原来这一栏只有虚拟下注的注数，没有虚拟
-        // 盈亏，得单独去「虚拟盘」页才看得到整体表现。含虚拟串关，口径
-        // 跟 realPnl 一致（都是已结算单场+串关的净盈亏）。
-        const { pnl: virtualPnl } = virtualPnlRoi(shownBets, virtualParlays);
+        const { pnl: realPnl, staked: realStakedSettled } = realPnlRoi(shownRealBets, realParlays);
+        // 毛盈亏＝本金×赔率（赢的话是总回款，输的话是0）＝净盈亏＋本金，
+        // 见 grossPnl 的推导。用户要求把「虚拟下注」「虚拟盈亏」这两格换成
+        // 实盘的毛/净一对——虚拟盘的注数和盈亏已经在虚拟盘页看得到，
+        // 这一栏原来是总览用，改成实盘的毛/净盈亏对比更直接有用。
+        const realGrossPnl = grossPnl(realPnl, realStakedSettled);
         return (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", background: C.border, gap: 1 }}>
           {[
             { v: `${backtest.correct}/${backtest.total}`, l: `${backtestLabel} · 预测正确`, c: C.blue },
             { v: pct(backtest.accuracy), l: `${backtestLabel} · 准确率`, c: backtest.accuracy > 0.6 ? C.accent : C.gold },
             { v: backtest.avg_rps?.toFixed(3), l: `${backtestLabel} · 平均RPS`, c: C.accent },
-            { v: shownBets.length + virtualParlays.length, l: "虚拟下注", c: C.text },
+            { v: fnum(realPnl), l: "净盈亏", c: realPnl >= 0 ? C.accent : C.red },
             { v: shownRealBets.length + realParlays.length, l: "实盘下注", c: C.purple },
             { v: Math.round(pendingStake).toLocaleString(), l: "投注金额", c: C.gold },
             { v: Math.round(turnover).toLocaleString(), l: "累计流水", c: C.blue },
             { v: fnum(realPnl), l: "实盘盈亏", c: realPnl >= 0 ? C.accent : C.red },
-            { v: fnum(virtualPnl), l: "虚拟盈亏", c: virtualPnl >= 0 ? C.accent : C.red },
+            { v: fnum(realGrossPnl), l: "实盘盈亏（不是净）", c: realGrossPnl >= 0 ? C.accent : C.red },
           ].map(({ v, l, c }) => (
             <div key={l} style={{ background: C.surface, padding: "9px 8px", textAlign: "center" }}>
               <div style={{ fontSize: 16, fontWeight: 900, color: c, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{v}</div>
@@ -851,7 +859,8 @@ function AppInner() {
         )}
 
         {!loading && tab === "chart" && bankroll && (
-          <ChartTab bankroll={bankroll} settings={settings} />
+          <ChartTab bankroll={bankroll} settings={settings}
+            bets={shownBets} realBets={shownRealBets} parlayBets={shownParlays} />
         )}
 
       </div>
@@ -1522,7 +1531,8 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
     parlays.filter(p => p.result === "pending").reduce((s, p) => s + (p.stake || 0), 0);
   // realBets 和 parlays 传进来时已经按联赛筛过，所以这两个数跟着筛选走，
   // 跟这块面板里其余六个数一致。详见 realPnlRoi() 上方的说明。
-  const { pnl: realPnl, roi: realRoi } = realPnlRoi(realBets, parlays);
+  const { pnl: realPnl, roi: realRoi, staked: realStakedSettled } = realPnlRoi(realBets, parlays);
+  const realGrossPnl = grossPnl(realPnl, realStakedSettled);
 
   return (
     <div>
@@ -1554,8 +1564,13 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
                 <span style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 8 }}>
                   本金 {Math.round(p.stake).toLocaleString()} ·{" "}
                   <strong style={{ color: p.result === "win" ? C.accent : p.result === "loss" ? C.red : C.gold }}>
-                    {p.result === "pending" ? "待结算" : p.result === "win" ? `赢 ${fnum(p.pnl)}` : `输 ${fnum(p.pnl)}`}
+                    {p.result === "pending" ? "待结算" : p.result === "win" ? `净赢 ${fnum(p.pnl)}` : `净输 ${fnum(p.pnl)}`}
                   </strong>
+                  {/* 净盈亏之外再显示毛盈亏（本金×总赔率，输的话是0），
+                      口径跟单场那边一致，见 grossPnl 的推导 */}
+                  {p.result !== "pending" && (
+                    <span style={{ color: C.textDim }}>· 毛 {Math.round(grossPnl(p.pnl || 0, p.stake || 0)).toLocaleString()}</span>
+                  )}
                   {/* 只有待结算的能取消——已结算的后端会拒绝，这里提前不给按钮 */}
                   {p.result === "pending" && onCancel && (
                     <button onClick={() => onCancel(`/parlay-bets/${p.id}`, "串关")}
@@ -1593,7 +1608,8 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
         <Stat label="投注金额" val={Math.round(pendingStake).toLocaleString()} color={C.gold} />
         <Stat label="赢注" val={wins} color={C.accent} />
         <Stat label="待结算" val={pendingCount} color={C.gold} />
-        <Stat label="实盘盈亏" val={fnum(realPnl)} color={realPnl >= 0 ? C.accent : C.red} />
+        <Stat label="净盈亏" val={fnum(realPnl)} color={realPnl >= 0 ? C.accent : C.red} />
+        <Stat label="毛盈亏" val={fnum(realGrossPnl)} color={realGrossPnl >= 0 ? C.accent : C.red} />
         <Stat label="实盘ROI" val={realRoi == null ? "—" : realRoi.toFixed(1) + "%"} color={(realRoi || 0) >= 0 ? C.accent : C.red} />
         <Stat label="胜率" val={settledCount ? pct(wins / settledCount) : "—"} color={C.blue} />
       </div>
@@ -1611,7 +1627,7 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
             <div style={{ textAlign: "right" }}>
               <div style={{ fontWeight: 700, fontSize: 13 }}>{b.stake_real.toLocaleString()} {b.currency}</div>
               <div style={{ fontSize: 11, fontWeight: 700, color: b.result === "pending" ? C.gold : won ? C.accent : C.red, display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
-                {b.result === "pending" ? "待结算" : won ? `+${(b.pnl_real || 0).toFixed(0)}` : `${(b.pnl_real || 0).toFixed(0)}`}
+                {b.result === "pending" ? "待结算" : won ? `净 +${(b.pnl_real || 0).toFixed(0)}` : `净 ${(b.pnl_real || 0).toFixed(0)}`}
                 {b.result === "pending" && onCancel && (
                   <button onClick={() => onCancel(`/real-bets/${b.id}`, "实盘下注")}
                     disabled={cancelling === `/real-bets/${b.id}`}
@@ -1620,6 +1636,14 @@ function RealBetsTab({ realBets, bankroll, settings, parlays = [], withdrawals =
                   </button>
                 )}
               </div>
+              {/* 净盈亏＝毛盈亏－本金（上面那行）。毛盈亏单独再显示一行——
+                  赢的话是本金×赔率的总回款，输的话是0。用户要求这两个数
+                  分开看，而不是只有一个不知道算没算本金的数字。 */}
+              {b.result !== "pending" && (
+                <div style={{ fontSize: 10, color: C.textDim, marginTop: 1 }}>
+                  毛 {Math.round(grossPnl(b.pnl_real || 0, b.stake_real || 0)).toLocaleString()}
+                </div>
+              )}
             </div>
           </div>
         );
@@ -1741,7 +1765,47 @@ function WithdrawSection({ bankroll, withdrawals, onRefresh }) {
 }
 
 // ── Chart Tab ────────────────────────────────────────────────
-function ChartTab({ bankroll, settings }) {
+// 逐日盈亏展开后的明细：按「下注记账的那一天」（虚拟盘/串关用 created_at，
+// 实盘单场用 placed_at）分组已结算的注单，算出当天虚拟盘/实盘各自的
+// 输赢场次、毛盈亏、净盈亏。故意用跟后端 /api/bankroll-summary 构造资金
+// 曲线事件完全相同的日期口径（那边虚拟盘/串关也是用 created_at，实盘
+// 单场用 placed_at，不是 settled_at）——这样展开明细里毛盈亏减本金
+// 汇总出来的净盈亏，才能跟外面折叠行里资金曲线算出来的净变化对上，
+// 不会出现「明细加起来跟外面显示的不是同一个数」这种自相矛盾。
+function buildDailyDetail(bets, realBets, parlays) {
+  const map = new Map();
+  function bucket(date, kind) {
+    if (!map.has(date)) map.set(date, {
+      virtual: { win: 0, loss: 0, gross: 0, net: 0 },
+      real: { win: 0, loss: 0, gross: 0, net: 0 },
+    });
+    return map.get(date)[kind];
+  }
+  for (const b of bets || []) {
+    if (b.result === "pending" || !b.created_at) continue;
+    const bk = bucket(b.created_at.slice(0, 10), "virtual");
+    bk[b.result === "win" ? "win" : "loss"]++;
+    bk.net += b.pnl || 0;
+    bk.gross += grossPnl(b.pnl || 0, b.stake || 0);
+  }
+  for (const b of realBets || []) {
+    if (b.result === "pending" || !b.placed_at) continue;
+    const bk = bucket(b.placed_at.slice(0, 10), "real");
+    bk[b.result === "win" ? "win" : "loss"]++;
+    bk.net += b.pnl_real || 0;
+    bk.gross += grossPnl(b.pnl_real || 0, b.stake_real || 0);
+  }
+  for (const p of parlays || []) {
+    if (p.result === "pending" || !p.created_at) continue;
+    const bk = bucket(p.created_at.slice(0, 10), p.kind === "real" ? "real" : "virtual");
+    bk[p.result === "win" ? "win" : "loss"]++;
+    bk.net += p.pnl || 0;
+    bk.gross += grossPnl(p.pnl || 0, p.stake || 0);
+  }
+  return map;
+}
+
+function ChartTab({ bankroll, settings, bets = [], realBets = [], parlayBets = [] }) {
   // 后端现在返回单一合并数据集（每个点同时带 virtual 和 real 两个值）。
   // 之前是两个独立数组分别喂给两条 Line，配 category 类型的 X 轴时
   // recharts 会因两边日期集合不同而画歪——这是曲线之前有问题的原因之一。
@@ -1759,6 +1823,15 @@ function ChartTab({ bankroll, settings }) {
     byDate.set(r.date, row);
   }
   const dailyRows = [...byDate.values()].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const dailyDetail = useMemo(() => buildDailyDetail(bets, realBets, parlayBets), [bets, realBets, parlayBets]);
+  const [openDays, setOpenDays] = useState(() => new Set());
+  function toggleDay(date) {
+    setOpenDays(s => {
+      const next = new Set(s);
+      next.has(date) ? next.delete(date) : next.add(date);
+      return next;
+    });
+  }
 
   return (
     <div>
@@ -1805,22 +1878,55 @@ function ChartTab({ bankroll, settings }) {
           不会显示成 0，本来就没有发生过的事没必要占一行。 */}
       {dailyRows.length > 0 && (
         <div>
-          <SL>逐日盈亏</SL>
+          <SL>逐日盈亏 · 点一行展开当日明细</SL>
           <div style={{ background: C.surface, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", padding: "6px 12px", fontSize: 9, color: C.textDim, textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>
-              <span></span><span style={{ textAlign: "right" }}>虚拟盘</span><span style={{ textAlign: "right" }}>实盘</span>
+            <div style={{ display: "grid", gridTemplateColumns: "16px 1fr 90px 90px", padding: "6px 12px", fontSize: 9, color: C.textDim, textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>
+              <span></span><span></span><span style={{ textAlign: "right" }}>虚拟盘</span><span style={{ textAlign: "right" }}>实盘</span>
             </div>
-            {dailyRows.map(row => (
-              <div key={row.date} style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px", padding: "8px 12px", borderBottom: `1px solid ${C.border}`, alignItems: "center", fontSize: 12 }}>
-                <span style={{ color: C.textDim }}>{fdt(row.date)}</span>
-                <span style={{ textAlign: "right", fontWeight: 700, color: row.v > 0 ? C.accent : row.v < 0 ? C.red : C.muted, fontVariantNumeric: "tabular-nums" }}>
-                  {row.v !== 0 ? fnum(row.v) : "—"}
-                </span>
-                <span style={{ textAlign: "right", fontWeight: 700, color: row.r > 0 ? C.purple : row.r < 0 ? C.red : C.muted, fontVariantNumeric: "tabular-nums" }}>
-                  {row.r !== 0 ? fnum(row.r) : "—"}
-                </span>
-              </div>
-            ))}
+            {dailyRows.map(row => {
+              const open = openDays.has(row.date);
+              const detail = dailyDetail.get(row.date);
+              return (
+                <div key={row.date} style={{ borderBottom: `1px solid ${C.border}` }}>
+                  <button onClick={() => toggleDay(row.date)} style={{
+                    width: "100%", display: "grid", gridTemplateColumns: "16px 1fr 90px 90px",
+                    padding: "8px 12px", alignItems: "center", fontSize: 12,
+                    background: "none", border: "none", color: C.text, textAlign: "left", cursor: "pointer",
+                  }}>
+                    <span style={{ color: C.textDim, fontSize: 10 }}>{open ? "▾" : "▸"}</span>
+                    <span style={{ color: C.textDim }}>{fdt(row.date)}</span>
+                    <span style={{ textAlign: "right", fontWeight: 700, color: row.v > 0 ? C.accent : row.v < 0 ? C.red : C.muted, fontVariantNumeric: "tabular-nums" }}>
+                      {row.v !== 0 ? fnum(row.v) : "—"}
+                    </span>
+                    <span style={{ textAlign: "right", fontWeight: 700, color: row.r > 0 ? C.purple : row.r < 0 ? C.red : C.muted, fontVariantNumeric: "tabular-nums" }}>
+                      {row.r !== 0 ? fnum(row.r) : "—"}
+                    </span>
+                  </button>
+                  {/* 展开明细：毛盈亏＝本金×赔率（赢的话是总回款，输是0），
+                      净盈亏就是上面折叠行里显示的那个数——两个虚拟盘/实盘
+                      分开列，跟外面折叠行的口径（created_at/placed_at 那天）
+                      完全一致，加总起来对得上，不会是两套自相矛盾的数字。 */}
+                  {open && (
+                    <div style={{ padding: "2px 12px 12px 30px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                      {[["virtual", "虚拟盘", C.accent], ["real", "实盘", C.purple]].map(([kind, label, color]) => {
+                        const d = detail?.[kind];
+                        if (!d || (d.win === 0 && d.loss === 0)) {
+                          return <div key={kind} style={{ fontSize: 11, color: C.textDim }}>{label}：当天无结算</div>;
+                        }
+                        return (
+                          <div key={kind} style={{ fontSize: 11, lineHeight: 1.8 }}>
+                            <div style={{ color, fontWeight: 700 }}>{label}</div>
+                            <div style={{ color: C.textDim }}>输赢 {d.win}胜{d.loss}负</div>
+                            <div style={{ color: C.textDim }}>毛盈亏 {fnum(d.gross)}</div>
+                            <div style={{ color: d.net >= 0 ? C.accent : C.red, fontWeight: 700 }}>净盈亏 {fnum(d.net)}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
