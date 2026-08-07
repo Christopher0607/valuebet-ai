@@ -754,7 +754,8 @@ function AppInner() {
         )}
 
         {!loading && tab === "parlay" && settings && (
-          <ParlaySuggestTab upcoming={upcoming} settings={settings} parlayBets={parlayBets} onRefresh={() => loadAll(true)} />
+          <ParlaySuggestTab upcoming={upcoming} settings={settings} parlayBets={parlayBets}
+            realBets={realBets} onRefresh={() => loadAll(true)} />
         )}
 
         {!loading && tab === "backtest" && (
@@ -2027,7 +2028,58 @@ function ChartTab({ bankroll, settings, bets = [], realBets = [], parlayBets = [
 }
 
 // ── Parlay Suggest Tab ──────────────────────────────────────
-function ParlaySuggestTab({ upcoming, settings, parlayBets, onRefresh }) {
+// 单场暴露（集中度）。串关最容易被低估的风险不是"某一注会不会中"，
+// 而是同一条腿被反复用在好几张票里：一场比赛走反，所有含这条腿的票
+// **整张**作废——连那些其他腿全中的票也一起没了。
+//
+// 为什么按 (match_id, outcome) 聚合而不是只按 match_id：同一场押主队和
+// 押客队是互斥的两笔，不该加在一起当成同一份风险。押罗奇代尔的票和押
+// 布拉德福德的票不会同时死。
+//
+// 单场实盘注单也计进去：它输了同样是真金白银没了。串关是"整张作废"、
+// 单场是"输自己那一注"，机制不同，但对"这场走反我会亏掉多少待结算的钱"
+// 这个问题来说两者都算。
+//
+// 只算实盘（kind === "real" 的串关 + RealBet）。虚拟盘是测试模型用的假钱，
+// 集中不集中都不产生财务风险，混进来只会稀释这个数字的含义。
+function buildExposure(realBets, parlays) {
+  const byLeg = new Map();   // "matchId:outcome" -> { stake, tickets, ... }
+  let total = 0;
+  function add(matchId, outcome, stake, meta) {
+    const key = `${matchId}:${outcome}`;
+    if (!byLeg.has(key)) byLeg.set(key, { key, matchId, outcome, stake: 0, tickets: 0, ...meta });
+    const e = byLeg.get(key);
+    e.stake += stake;
+    e.tickets += 1;
+  }
+  for (const b of realBets || []) {
+    if (b.result !== "pending") continue;
+    const s = b.stake_real || 0;
+    total += s;
+    add(b.match_id, b.outcome, s, { team1: b.team1, team2: b.team2, date: b.date, competition_id: b.competition_id });
+  }
+  for (const p of parlays || []) {
+    if (p.result !== "pending" || p.kind !== "real") continue;
+    const s = p.stake || 0;
+    total += s;
+    for (const l of p.legs || []) {
+      add(l.match_id, l.outcome, s, { team1: l.team1, team2: l.team2, date: l.date, competition_id: l.competition_id });
+    }
+  }
+  const rows = [...byLeg.values()].sort((a, b) => b.stake - a.stake);
+  return { byLeg, rows, total };
+}
+
+// 单场暴露的提醒线。业界常见的自律区间是"任何单一比赛不超过在压总额的
+// 20-25%"，这里取 25% 提醒、40% 判定为危险。刻意不做成可配置项——
+// 这不是一个需要调参的策略参数，是一条自律线，做成可调的第一件事就是
+// 把它调高。数字本身也不是从这个项目的数据里推出来的，只是常识性上限，
+// 注释在这里写清楚，免得以后被当成"验证过的最优阈值"。
+const EXPOSURE_WARN_PCT = 25;
+const EXPOSURE_DANGER_PCT = 40;
+const exposureColor = p => p >= EXPOSURE_DANGER_PCT ? C.red : p >= EXPOSURE_WARN_PCT ? C.gold : C.textDim;
+
+function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRefresh }) {
   const zhTeam = useZhTeam();
   const [selected, setSelected] = useState({});   // { matchId: true }
   // 赔率从后端已保存的记录初始化——之前这里是空对象，赔率只活在 React state 里，
@@ -2104,6 +2156,35 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, onRefresh }) {
     }
     return map;
   }, [parlayBets]);
+
+  // 当前实盘待结算的单场暴露，见 buildExposure 的说明。
+  // 刻意用未按联赛筛过的原始注单——集中度问题是整个账本的属性，
+  // 筛到某个联赛只会让它看起来比实际轻。
+  const exposure = useMemo(() => buildExposure(realBets, parlayBets), [realBets, parlayBets]);
+  const [showExposure, setShowExposure] = useState(false);
+
+  // 「这一注按 stake 下进去之后，本组合里最集中的那条腿会变成多少」。
+  // 分母也要加上这一注——新钱同时抬高分子和分母，只加分子会高估。
+  function projectExposure(combo, stake) {
+    const s = +stake || 0;
+    // 手上一注待结算的都没有时不提示。那种情况下算出来必然是 100%
+    // （唯一一注当然占全部），字面上没错但没有任何信息量——"集中度"
+    // 是相对于一个已经存在的账本才有意义的概念。等真的有票在压着了，
+    // 再开始提醒。
+    if (exposure.total <= 0) return null;
+    const newTotal = exposure.total + s;
+    if (newTotal <= 0) return null;
+    let worst = null;
+    for (const leg of combo.legs) {
+      const cur = exposure.byLeg.get(`${leg.match_id}:${leg.outcome}`);
+      const after = (cur?.stake || 0) + s;
+      const pct = after / newTotal * 100;
+      if (!worst || pct > worst.pct) {
+        worst = { leg, pct, after, before: cur?.stake || 0, tickets: (cur?.tickets || 0) + 1 };
+      }
+    }
+    return worst;
+  }
 
   const allSelected = withOdds.length > 0 && withOdds.every(m => selected[m.id]);
   function toggleSelectAll() {
@@ -2233,6 +2314,62 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, onRefresh }) {
         不会凭空创造价值。
       </div>
 
+      {/* 当前账本的单场集中度。放在搜索结果之前，因为它描述的是"你现在
+          已经压了什么"，跟这次搜什么组合无关。默认收起，只把最集中的
+          那一条和总额摆在标题上——平时不碍事，超过提醒线时颜色会变。 */}
+      {exposure.total > 0 && exposure.rows.length > 0 && (() => {
+        const top = exposure.rows[0];
+        const topPct = top.stake / exposure.total * 100;
+        return (
+          <div style={{ background: C.card, border: `1px solid ${topPct >= EXPOSURE_WARN_PCT ? exposureColor(topPct) + "66" : C.border}`,
+                        borderRadius: 9, marginBottom: 12, overflow: "hidden" }}>
+            <button onClick={() => setShowExposure(v => !v)} style={{
+              width: "100%", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+              background: "none", border: "none", color: C.text, textAlign: "left",
+              padding: "10px 13px", fontSize: 11.5, cursor: "pointer",
+            }}>
+              <span style={{ color: C.textDim, fontSize: 10 }}>{showExposure ? "▾" : "▸"}</span>
+              <span style={{ fontWeight: 700 }}>单场集中度</span>
+              <span style={{ color: C.textDim }}>实盘待结算 {fgross(exposure.total)}</span>
+              <span style={{ marginLeft: "auto", color: exposureColor(topPct), fontWeight: 800 }}>
+                最集中一场 {topPct.toFixed(1)}%
+              </span>
+            </button>
+            {showExposure && (
+              <div style={{ padding: "0 13px 12px" }}>
+                <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.6, marginBottom: 8 }}>
+                  这一场走反 → 所有含这条腿的串关<strong>整张作废</strong>（其他腿全中也一样），
+                  加上押同一边的单场注单，一共会亏掉多少待结算本金。
+                  百分比加起来会超过 100%——同一张票被它含的每条腿各算一次，这正是重叠的定义。
+                  提醒线 {EXPOSURE_WARN_PCT}%，{EXPOSURE_DANGER_PCT}% 以上按危险标红。
+                </div>
+                {exposure.rows.slice(0, 10).map(r => {
+                  const p = r.stake / exposure.total * 100;
+                  const m = matchById[r.matchId];
+                  const t1 = zhTeam(r.team1 || m?.team1), t2 = zhTeam(r.team2 || m?.team2);
+                  const who = r.outcome === "home" ? t1 : r.outcome === "away" ? t2 : "平局";
+                  return (
+                    <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0",
+                                              borderTop: `1px solid ${C.border}`, fontSize: 11 }}>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ color: C.text }}>{t1} vs {t2}</span>
+                        <span style={{ color: C.textDim }}>（押 {who}）</span>
+                        {(r.date || m?.date) && <span style={{ color: C.textDim }}> · {fdt(r.date || m.date)}</span>}
+                      </span>
+                      <span style={{ color: C.textDim, whiteSpace: "nowrap" }}>{r.tickets} 笔</span>
+                      <span style={{ color: C.textDim, whiteSpace: "nowrap", width: 62, textAlign: "right" }}>{fgross(r.stake)}</span>
+                      <span style={{ color: exposureColor(p), fontWeight: 800, whiteSpace: "nowrap", width: 48, textAlign: "right" }}>
+                        {p.toFixed(1)}%
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 11, color: C.textDim }}>最少腿数:</span>
@@ -2360,6 +2497,28 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, onRefresh }) {
                   </div>
                 ))}
               </div>
+
+              {/* 下这一注之后集中度会变成多少。金额优先用实盘表单里已经填的，
+                  没填就按凯利建议试算——这样还没展开实盘表单时也看得到。
+                  只在超过提醒线时才显示，平时不占地方也不制造噪音。 */}
+              {(() => {
+                const stake = +realStake[i] || combo.kelly_amount || 0;
+                const w = stake > 0 ? projectExposure(combo, stake) : null;
+                if (!w || w.pct < EXPOSURE_WARN_PCT) return null;
+                const c = exposureColor(w.pct);
+                const beforePct = exposure.total > 0 ? w.before / exposure.total * 100 : 0;
+                return (
+                  <div style={{ background: c + "18", border: `1px solid ${c}55`, borderRadius: 7,
+                                padding: "8px 10px", marginBottom: 10, fontSize: 10.5, color: c, lineHeight: 1.6 }}>
+                    <strong>{w.pct >= EXPOSURE_DANGER_PCT ? "⛔ 集中度危险" : "⚠️ 集中度偏高"}</strong>
+                    ：按 {fgross(stake)} 下这一注，
+                    「{legDisplay(w.leg.match_id, w.leg.outcome) || w.leg.label}」
+                    会占到实盘待结算总额的 <strong>{w.pct.toFixed(1)}%</strong>
+                    （现在 {beforePct.toFixed(1)}%，共 {w.tickets} 笔）。
+                    这一场走反，这些票会整张作废。
+                  </div>
+                );
+              })()}
 
               <div style={{ display: "flex", gap: 6, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
                 <button
