@@ -694,14 +694,15 @@ function AppInner() {
         const turnover =
           shownRealBets.reduce((s, b) => s + (b.stake_real || 0), 0) +
           realParlays.reduce((s, p) => s + (p.stake || 0), 0);
-        // 实盘盈亏同样跟着联赛筛选走，跟这一栏其余几个数口径一致。
-        // 不再读 bankroll.real.total_pnl——那个是全局的，混在这排筛过的
-        // 数字里会把某个联赛的亏损用另一个联赛的盈利盖掉。
-        const { pnl: realPnl, staked: realStakedSettled } = realPnlRoi(shownRealBets, realParlays);
+        // 盈亏/净盈亏/ROI 三个都跟着联赛筛选走，跟这一栏其余几个数口径一致。
+        // 不再读 bankroll.real.total_pnl / roi_pct——那两个是全局的，混在这排
+        // 筛过的数字里会把某个联赛的亏损用另一个联赛的盈利盖掉。
+        //
         // 盈亏＝本金×赔率（赢的话是总回款，输的话是0）＝净盈亏＋本金，
-        // 见 grossPnl 的推导。用户要求把「虚拟下注」「虚拟盈亏」这两格换成
-        // 实盘的盈亏/净盈亏一对——虚拟盘的注数和盈亏已经在虚拟盘页看得到，
-        // 这一栏原来是总览用，改成实盘的盈亏/净盈亏对比更直接有用。
+        // 见 grossPnl 的推导。ROI 用的是已结算本金做分母（settledPnlRoi
+        // 内部算的 staked），跟实盘页那个「实盘ROI」完全同一个函数、
+        // 同一个口径，两处不会对不上。
+        const { pnl: realPnl, roi: realRoi, staked: realStakedSettled } = realPnlRoi(shownRealBets, realParlays);
         const realGrossPnl = grossPnl(realPnl, realStakedSettled);
         return (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", background: C.border, gap: 1 }}>
@@ -709,12 +710,12 @@ function AppInner() {
             { v: `${backtest.correct}/${backtest.total}`, l: `${backtestLabel} · 预测正确`, c: C.blue },
             { v: pct(backtest.accuracy), l: `${backtestLabel} · 准确率`, c: backtest.accuracy > 0.6 ? C.accent : C.gold },
             { v: backtest.avg_rps?.toFixed(3), l: `${backtestLabel} · 平均RPS`, c: C.accent },
+            { v: fgross(realGrossPnl), l: "盈亏", c: C.gold },
             { v: fnum(realPnl), l: "净盈亏", c: realPnl >= 0 ? C.accent : C.red },
+            { v: realRoi == null ? "—" : realRoi.toFixed(1) + "%", l: "ROI%", c: (realRoi || 0) >= 0 ? C.accent : C.red },
             { v: shownRealBets.length + realParlays.length, l: "实盘下注", c: C.purple },
             { v: Math.round(pendingStake).toLocaleString(), l: "投注金额", c: C.gold },
             { v: Math.round(turnover).toLocaleString(), l: "累计流水", c: C.blue },
-            { v: fnum(realPnl), l: "实盘盈亏", c: realPnl >= 0 ? C.accent : C.red },
-            { v: fgross(realGrossPnl), l: "盈亏", c: C.gold },
           ].map(({ v, l, c }) => (
             <div key={l} style={{ background: C.surface, padding: "9px 8px", textAlign: "center" }}>
               <div style={{ fontSize: 16, fontWeight: 900, color: c, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{v}</div>
