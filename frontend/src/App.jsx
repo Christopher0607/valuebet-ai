@@ -677,18 +677,23 @@ function AppInner() {
       )}
 
       {/* 串关（实盘）算进顶部这条总览栏，跟 RealBetsTab 用同一份过滤。
-          原来「实盘下注」只数 shownRealBets.length，串关记在另一张表
-          （ParlayBet），从来没被计进来过——用户反馈这里的数字比实际少，
-          就是这个。这一栏现在只放实盘相关的数字（虚拟盘的注数/盈亏在
-          「虚拟盘」页单独看），盈亏/净盈亏两个词的定义见 grossPnl 上方。 */}
+          串关记在另一张表（ParlayBet），早先这一栏的注数只数 RealBet、
+          从来没把串关计进来，用户反馈"数字比实际少"就是这个，现在两边都算。
+          这一栏只放实盘相关的数字（虚拟盘的注数/盈亏在「虚拟盘」页单独看），
+          盈亏/净盈亏两个词的定义见 grossPnl 上方。 */}
       {/* Stats bar */}
       {backtest && (() => {
         const realParlays = shownParlays.filter(p => p.kind === "real");
-        // 投注金额：现在还压着多少钱没结算——真实下注 + 真实串关里
-        // result === "pending" 的本金合计
+        // 待结算下注 / 投注金额：现在还压着多少注、多少钱没结算——真实下注
+        // 加真实串关里 result === "pending" 的部分。两个数刻意用同一份过滤
+        // 结果算，保证"几注"和"多少钱"永远说的是同一批注单，不会一个算了
+        // 串关另一个没算。
+        const pendingRealBets = shownRealBets.filter(b => b.result === "pending");
+        const pendingRealParlays = realParlays.filter(p => p.result === "pending");
+        const pendingCount = pendingRealBets.length + pendingRealParlays.length;
         const pendingStake =
-          shownRealBets.filter(b => b.result === "pending").reduce((s, b) => s + (b.stake_real || 0), 0) +
-          realParlays.filter(p => p.result === "pending").reduce((s, p) => s + (p.stake || 0), 0);
+          pendingRealBets.reduce((s, b) => s + (b.stake_real || 0), 0) +
+          pendingRealParlays.reduce((s, p) => s + (p.stake || 0), 0);
         // 累计流水：从有记录以来一共下过多少钱，不分输赢还是待结算——
         // 跟 RealBetsTab 里的「累计流水」是同一个口径，这里在总览栏里再显示一次
         const turnover =
@@ -713,7 +718,7 @@ function AppInner() {
             { v: fgross(realGrossPnl), l: "盈亏", c: C.gold },
             { v: fnum(realPnl), l: "净盈亏", c: realPnl >= 0 ? C.accent : C.red },
             { v: realRoi == null ? "—" : realRoi.toFixed(1) + "%", l: "ROI%", c: (realRoi || 0) >= 0 ? C.accent : C.red },
-            { v: shownRealBets.length + realParlays.length, l: "实盘下注", c: C.purple },
+            { v: pendingCount, l: "待结算下注", c: C.purple },
             { v: Math.round(pendingStake).toLocaleString(), l: "投注金额", c: C.gold },
             { v: Math.round(turnover).toLocaleString(), l: "累计流水", c: C.blue },
           ].map(({ v, l, c }) => (
