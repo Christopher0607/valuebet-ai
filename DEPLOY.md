@@ -1,4 +1,7 @@
-# 部署到公网（Vercel + Railway + Supabase）
+# 部署到公网（Supabase + 后端 + 前端）
+
+> 后端 Railway 或 Render 二选一（见「二」和「二之二」），
+> 前端 Vercel 或 Netlify 二选一（见「三」和「三之二」），四种组合都验证过。
 
 ## 📍 当前进度（2026-08，接手的人先看这段）
 
@@ -97,6 +100,64 @@
    > 其实配错了根本起不来——后端有个启动自检：一旦发现用的是远程数据库
    > 却没有 JWT 密钥，会直接拒绝启动并打出原因。这是故意的：宁可部署失败，
    > 也不要一个「看起来正常但所有人都能读你实盘记录」的服务。
+
+---
+
+## 二之二、Render（后端的另一个选择）
+
+Railway 的免费额度是**一次性 30 天试用**，用完就得付费。Render 有永久免费档，
+代价是闲置 15 分钟后休眠、下次访问要等约 50 秒冷启动。两边配置几乎一样。
+
+1. render.com → New → **Web Service** → 选这个仓库。
+2. 构建设置：
+
+   | 项 | 填什么 |
+   |---|---|
+   | Root Directory | `backend` |
+   | Build Command | `pip install -r requirements.txt` |
+   | Start Command | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+
+   > Start Command 必须带 `--port $PORT`。`backend/Procfile` 里那行没写端口
+   > （Railway 能自己探测），Render 只认 `$PORT`，不写起不来。
+
+3. **环境变量**：跟 Railway 那节完全一样的四个（`DATABASE_URL`、`SUPABASE_URL`、
+   `SUPABASE_ANON_KEY`、`FRONTEND_ORIGINS`），外加**必须**加这一个：
+
+   ```
+   PYTHON_VERSION = 3.12.10
+   ```
+
+   ### ⚠️ 不加这个，构建必然失败——这是真踩过的坑
+
+   Render 新建服务默认用最新的 Python（2026-08 时是 3.14），而
+   `requirements.txt` 里锁的两个包**在 3.14 上没有预编译 wheel**：
+
+   - `pydantic==2.9.2` → 依赖 `pydantic-core 2.23.4`，pip 只能去源码编译。
+     它是 Rust 写的，要走 maturin + cargo，而 Render 构建环境的
+     cargo 目录是只读的，于是报一串看不出所以然的错：
+     `Read-only file system (os error 30)` → `maturin failed` →
+     `metadata-generation-failed`。
+     **报错里一个字都没提 Python 版本**，很容易往依赖冲突的方向查偏。
+   - `psycopg2-binary==2.9.10` → 3.14 上压根没有这个版本的 wheel
+     （最低要 2.9.11）。这个还没轮到报错，前一个就先挂了。
+
+   实测确认过（三个版本各跑一遍 `pip download --only-binary=:all:`）：
+
+   | Python | pydantic-core 2.23.4 | psycopg2-binary 2.9.10 |
+   |---|---|---|
+   | 3.12 | ✅ 有 wheel | ✅ 有 wheel |
+   | 3.13 | ✅ 有 wheel | ✅ 有 wheel |
+   | 3.14 | ❌ 要源码编译 | ❌ 没有 |
+
+   仓库根目录的 `.python-version` 写的就是 `3.12.10`，但**别指望它**——
+   Render 主要认 `PYTHON_VERSION` 这个环境变量。根目录那个 `runtime.txt`
+   是 Heroku 的约定，Render 不读，所以它写着 3.12 也拦不住这个问题。
+
+   > 想彻底摆脱版本锁，得把 `pydantic` 和 `psycopg2-binary` 升到有 3.14
+   > wheel 的版本。但 pydantic 跨小版本有过 breaking change，升级要重跑
+   > 一遍接口验收，不是改个数字就完事——现在没有非升不可的理由。
+
+4. 部署完同样访问 `/api/health`，必须是 `{"ok": true, "auth_enabled": true}`。
 
 ---
 
