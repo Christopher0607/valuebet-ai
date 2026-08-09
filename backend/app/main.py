@@ -129,6 +129,11 @@ def _seed_default_competition():
             #       在那之前「预测」页看不到法甲未来比赛是正确行为
             ("ligue1", "Ligue 1", "法甲", f"{BASE}/fr.1.json", True),
             ("championship", "EFL Championship", "英冠", f"{BASE}/en.2.json", True),
+            # 英甲/英乙/西乙。.json 镜像的赛季有真实断档（en.3/en.4 只有 6 季、
+            # es.2 有 8 季），抓取时缺的赛季静默跳过，不影响。
+            ("leagueone", "EFL League One", "英甲", f"{BASE}/en.3.json", True),
+            ("leaguetwo", "EFL League Two", "英乙", f"{BASE}/en.4.json", True),
+            ("segunda", "LaLiga 2", "西乙", f"{BASE}/es.2.json", True),
             ("ucl", "UEFA Champions League", "欧冠", f"{BASE}/uefa.cl.json", True),
             # 这两个数据源不是 openfootball，走完全不同的抓取路径（见
             # updater.py 的 run_full_update 里对 code 的分支判断），data_source

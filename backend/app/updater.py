@@ -245,6 +245,13 @@ _TXT_SOURCES = {
     # 而 football.json/2026-27/en.2.json 还是 404——跟英超一模一样的镜像
     # 滞后，所以这条 .txt 源是英冠能看到未来赛程的唯一途径。
     "en.2": "https://raw.githubusercontent.com/openfootball/england/master/{season}/2-championship.txt",
+    # 英甲/英乙/西乙。实测 2026-08：这三个的 2026-27 .txt 还没发布（404），
+    # 但 2025-26 有（200），而 .json 镜像这三个联赛的赛季断档更严重。
+    # 挂上 .txt 源的意义是：一旦上游发布 2026-27，赛季探测会自动选中它，
+    # 不需要再改代码。
+    "en.3": "https://raw.githubusercontent.com/openfootball/england/master/{season}/3-league1.txt",
+    "en.4": "https://raw.githubusercontent.com/openfootball/england/master/{season}/4-league2.txt",
+    "es.2": "https://raw.githubusercontent.com/openfootball/espana/master/{season}/2-liga2.txt",
     # 法甲没有可用的 .txt 源：openfootball/france 仓库实测没有任何赛季的
     # ligue1 赛程文件（各种文件名/赛季组合都试过，全 404），europe 仓库同样
     # 没有。所以法甲只能靠 .json 镜像，而镜像目前最新只到 2025-26（已完赛）。
