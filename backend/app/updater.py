@@ -157,6 +157,22 @@ _CLUB_NAME_ALIASES = {
     "Paris": "Paris FC",
     #   AC Ajaccio(2022-23) 与 Gazélec FC Ajaccio(2015-16) 年份也互补，
     #   但这是科西嘉阿雅克肖同城的两家不同俱乐部，不是改名，不合并。
+    # ── .txt 赛程源 vs .json 历史源的队名差异 ────────────────────
+    # 这三条是做「未来比赛的球队在不在参数表里」体检时抓出来的，属于跟
+    # 上面 Marseille 那批同一类的问题，但触发路径不同：不是跨赛季改名，
+    # 而是**同一时间点、两个数据源写法不同**——历史比分来自 football.json
+    # 镜像，新赛季赛程来自各国 .txt 源，两边对同一支球队的写法不一致。
+    # 后果比改名更隐蔽：比赛照常显示、概率照常算，只是那两支队悄悄退回
+    # (0,0) 兜底值，产出的是「看起来正常实则无意义」的预测。
+    # 每条都确认过规范名在训练数据里的真实场次，不是看着像就并：
+    "RC Deportivo La Coruña": "Deportivo La Coruña",      # 表里 251 场
+    "Real Racing Club de Santander": "Racing Santander",  # 表里 95 场
+    "ES Troyes AC": "ESTAC Troyes",                       # 表里 152 场
+    # 顺带记录两支**确实没有**历史数据的新升班马，不要给它们编别名：
+    #   Le Mans（2026-27 升上法甲）、SV 07 Elversberg（升上德甲）——
+    #   我们不训练法乙/德乙，所以它们在参数表里本来就该缺席，会走
+    #   FALLBACK 兜底。前端的 data_backing 会把这种比赛标成 "none"，
+    #   这是正确行为，不是要修的 bug。
     # MLS —— 上面那条"去掉尾部 FC/AFC"的规则是照欧洲联赛的习惯写的，那边
     # "Arsenal FC" 的 FC 只是通用后缀，去掉不影响识别。但"Los Angeles FC"
     # （官方队名就叫 LAFC）不一样，FC 是队名本身的一部分，去掉之后变成
@@ -254,9 +270,17 @@ _TXT_SOURCES = {
     "es.2": "https://raw.githubusercontent.com/openfootball/espana/master/{season}/2-liga2.txt",
     # 全国联赛：这条是唯一来源，不是兜底——football.json 没有 en.5。
     "en.5": "https://raw.githubusercontent.com/openfootball/england/master/{season}/5-nationalleague.txt",
-    # 法甲没有可用的 .txt 源：openfootball/france 仓库实测没有任何赛季的
-    # ligue1 赛程文件（各种文件名/赛季组合都试过，全 404），europe 仓库同样
-    # 没有。所以法甲只能靠 .json 镜像，而镜像目前最新只到 2025-26（已完赛）。
+    # 法甲。这条一开始漏掉了，因为 openfootball/france 的目录结构跟
+    # england/espana **完全不一样**，靠猜文件名试不出来：
+    #   england/espana:  {season}/1-premierleague.txt   ← 赛季是目录
+    #   france:          france/{season}_fr1.txt        ← 赛季是文件名前缀，
+    #                                                     而且外面还套一层国家目录
+    # 这个仓库其实是整个欧洲的合集（albania/andorra/.../france/... 几十个
+    # 国家各一个子目录），不是单个国家的仓库。是 git clone 下来看目录树
+    # 才确认的——之前用 curl 猜路径全是 404，得出"法甲没有 .txt 源"的
+    # 错误结论。实测 france/2026-27_fr1.txt 有完整的 306 场新赛季赛程
+    # （2026-08-22 ~ 2027-05-29）。
+    "fr.1": "https://raw.githubusercontent.com/openfootball/france/master/france/{season}_fr1.txt",
 }
 
 _MONTHS = {m: i for i, m in enumerate(
