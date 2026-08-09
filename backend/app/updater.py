@@ -137,6 +137,26 @@ _CLUB_NAME_ALIASES = {
     "Bayern München": "FC Bayern München",
     "Bor. Mönchengladbach": "Borussia Mönchengladbach",
     "Werder Bremen": "SV Werder Bremen",
+    # Ligue 1 —— openfootball 从 2023 年起换了写法，同一家俱乐部在
+    # 2015-2023 和 2023-2026 两段用了不同名字。不合并会被当成两支球队、
+    # 各拿一半比赛，两个参数都是错的。判据不是"名字像"，是**年份互补**
+    # （旧名到 2023 为止、新名从 2023 开始，中间无重叠），实测场次：
+    #   Olympique Marseille 294 → Olympique de Marseille 102（合并后 396）
+    #   Stade Rennais       294 → Stade Rennais FC 1901  102（合并后 396）
+    #   RC Strasbourg       217 → RC Strasbourg Alsace   102（合并后 319）
+    #   Racing Club de Lens 102 → RC Lens                114（合并后 216）
+    "Olympique Marseille": "Olympique de Marseille",
+    "Stade Rennais": "Stade Rennais FC 1901",
+    "RC Strasbourg": "RC Strasbourg Alsace",
+    "Racing Club de Lens": "RC Lens",
+    # 两个**不能**合并的，都单独查证过，别看着像就并进去：
+    #   "Paris" 不是巴黎圣日耳曼，是巴黎FC（2025-26 升上法甲）。两者在
+    #   2025、2026 两季同时出现，且直接交手过 2 场（2026-01-04、2026-05-17）,
+    #   铁证是两家俱乐部。但裸写 "Paris" 太容易被误读成 PSG，所以跟 MLS
+    #   的 "Los Angeles" 一样补全成正式名。
+    "Paris": "Paris FC",
+    #   AC Ajaccio(2022-23) 与 Gazélec FC Ajaccio(2015-16) 年份也互补，
+    #   但这是科西嘉阿雅克肖同城的两家不同俱乐部，不是改名，不合并。
     # MLS —— 上面那条"去掉尾部 FC/AFC"的规则是照欧洲联赛的习惯写的，那边
     # "Arsenal FC" 的 FC 只是通用后缀，去掉不影响识别。但"Los Angeles FC"
     # （官方队名就叫 LAFC）不一样，FC 是队名本身的一部分，去掉之后变成
@@ -221,6 +241,13 @@ _TXT_SOURCES = {
     "it.1": "https://raw.githubusercontent.com/openfootball/italy/master/{season}/1-seriea.txt",
     "de.1": "https://raw.githubusercontent.com/openfootball/deutschland/master/{season}/1-bundesliga.txt",
     "uefa.cl": "https://raw.githubusercontent.com/openfootball/champions-league/master/{season}/cl.txt",
+    # 英冠。实测 2026-08：england/2026-27/2-championship.txt 已发布（200），
+    # 而 football.json/2026-27/en.2.json 还是 404——跟英超一模一样的镜像
+    # 滞后，所以这条 .txt 源是英冠能看到未来赛程的唯一途径。
+    "en.2": "https://raw.githubusercontent.com/openfootball/england/master/{season}/2-championship.txt",
+    # 法甲没有可用的 .txt 源：openfootball/france 仓库实测没有任何赛季的
+    # ligue1 赛程文件（各种文件名/赛季组合都试过，全 404），europe 仓库同样
+    # 没有。所以法甲只能靠 .json 镜像，而镜像目前最新只到 2025-26（已完赛）。
 }
 
 _MONTHS = {m: i for i, m in enumerate(

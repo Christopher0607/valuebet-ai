@@ -57,6 +57,9 @@ COMPETITION_SCOPE = {
     "wc2026": "international",
     "epl": "club", "laliga": "club", "seriea": "club", "bundesliga": "club",
     "ucl": "club",
+    # 法甲、英冠同样并进 club 表——各自的桥（法甲靠欧冠 5 支、英冠靠
+    # 升降级 24 支共享球队）见 training/train_mle_club.py 的 DOMESTIC_LEAGUES
+    "ligue1": "club", "championship": "club",
     "mls": "mls",
     "efl_cup": "efl_cup",
 }
@@ -65,6 +68,7 @@ COMPETITION_SCOPE = {
 COMPETITION_NEUTRAL = {
     "wc2026": True,
     "epl": False, "laliga": False, "seriea": False, "bundesliga": False,
+    "ligue1": False, "championship": False,      # 常规主客场联赛
     "ucl": False,     # 欧冠只有决赛在中立场，训练数据里已按轮次区分，这里取多数情况
     "mls": False,
     "efl_cup": False,  # 联赛杯只有决赛中立场，跟欧冠同样处理，取多数情况

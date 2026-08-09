@@ -121,6 +121,14 @@ def _seed_default_competition():
             ("laliga", "La Liga", "西甲", f"{BASE}/es.1.json", True),
             ("seriea", "Serie A", "意甲", f"{BASE}/it.1.json", True),
             ("bundesliga", "Bundesliga", "德甲", f"{BASE}/de.1.json", True),
+            # 法甲/英冠跟上面四个走同一套 openfootball 文件命名与抓取路径。
+            # 注意两者的「未来赛程」可用性不同，实测（2026-08）：
+            #   英冠 2026-27 的 .txt 赛程已发布 → 有未来比赛可预测/下注
+            #   法甲 2026-27 三个源全部 404（.json 镜像和 .txt 都没有）
+            #     → 目前只有历史数据，等 openfootball 发布后会自动接上，
+            #       在那之前「预测」页看不到法甲未来比赛是正确行为
+            ("ligue1", "Ligue 1", "法甲", f"{BASE}/fr.1.json", True),
+            ("championship", "EFL Championship", "英冠", f"{BASE}/en.2.json", True),
             ("ucl", "UEFA Champions League", "欧冠", f"{BASE}/uefa.cl.json", True),
             # 这两个数据源不是 openfootball，走完全不同的抓取路径（见
             # updater.py 的 run_full_update 里对 code 的分支判断），data_source
