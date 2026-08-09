@@ -22,6 +22,13 @@ _BASE = "https://api.the-odds-api.com/v4"
 SPORT_KEYS = {
     "mls": "soccer_usa_mls",
     "efl_cup": "soccer_england_efl_cup",
+    # 英甲/英乙/西乙：这三个 key 是从 /v4/sports/ 的真实返回里挑出来的，
+    # 不是按命名规律推的。同一份返回里**没有**英格兰全国联赛——第五级
+    # 半职业联赛博彩公司不开盘，The Odds API 就不收录，所以全国联赛拿不到
+    # 未来赛程，只能等 openfootball 发布，这是数据源的事实不是配置问题。
+    "leagueone": "soccer_england_league1",
+    "leaguetwo": "soccer_england_league2",
+    "segunda": "soccer_spain_segunda_division",
 }
 
 # 训练数据（历史赛果）来自 API-Football，这里（未来赛程）来自 The Odds

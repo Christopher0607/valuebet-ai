@@ -28,6 +28,14 @@ from . import api_football, odds_api
 # 未来赛程从 The Odds API 拿（不受那个赛季限制，但也不含任何赔率数据）。
 _ODDS_TXT_COMPETITIONS = {"mls", "efl_cup"}
 
+# 混合来源的赛事：**历史赛果**照旧走 openfootball（.json 镜像有完整历史，
+# 也是 club 参数表的训练数据来源），但**未来赛程**走 The Odds API。
+# 原因很具体：openfootball 上游到 2026-08 还没发布这三个联赛的 2026-27
+# 赛季文件（三个仓库整棵目录树 clone 下来搜过，2026-27 只有英超/英冠/
+# 西甲/法甲/荷甲/葡超六个文件），而 The Odds API 已经有下一轮的赛程。
+# 等 openfootball 补上之后这里可以撤掉，届时 .txt 源已经挂好会自动接管。
+_ODDS_FIXTURE_COMPETITIONS = {"leagueone", "leaguetwo", "segunda"}
+
 
 def _has_af_historical_data(db: Session, comp: "models.Competition") -> bool:
     """2022-2024 这三个赛季已经踢完、永远不会再变（api_football.py 顶部
@@ -173,6 +181,31 @@ _CLUB_NAME_ALIASES = {
     #   我们不训练法乙/德乙，所以它们在参数表里本来就该缺席，会走
     #   FALLBACK 兜底。前端的 data_backing 会把这种比赛标成 "none"，
     #   这是正确行为，不是要修的 bug。
+    # ── The Odds API 的队名 → 参数表规范名 ──────────────────────
+    # 英甲/英乙/西乙的未来赛程走 The Odds API（openfootball 上游还没发
+    # 2026-27），而它用的是自己一套队名，跟 openfootball 的历史数据对不上。
+    # 对不上的后果是静默的：比赛照常显示、概率照常算，只是那支队退回
+    # (0,0) 兜底，产出"看起来正常实则无意义"的预测。
+    # 把三个联赛全部 70 支球队逐个跑过 normalize_team_name 再查参数表，
+    # 英乙 24/24 全对得上，英甲差 2 支，西乙差 10 支。括号里是该规范名在
+    # 训练数据里的真实场次——每条都核对过才写，不是看名字像就并：
+    "Luton": "Luton Town",                 # 394 场
+    "Wimbledon": "AFC Wimbledon",          # 249 场
+    "Almería": "UD Almería",               # 381 场
+    "Celta Vigo": "RC Celta de Vigo",      # 417 场
+    "Córdoba": "Córdoba CF",               # 221 场
+    "Las Palmas": "UD Las Palmas",         # 327 场
+    "Leganés": "CD Leganés",               # 285 场
+    "Mallorca": "RCD Mallorca",            # 395 场
+    "Oviedo": "Real Oviedo",               # 331 场
+    "Tenerife": "CD Tenerife",             # 293 场
+    "Andorra CF": "FC Andorra",            # 12 场（新队，样本本来就少）
+    "Sabadell": "CE Sabadell",             # 42 场（注意：源写 "Sabadell FC"，
+                                           # 尾部 FC 会先被规则削掉，所以
+                                           # 这里的 key 是削完的 "Sabadell"）
+    # 差点写错的一条，记下来防止以后再犯：用子串找候选时 "Las Palmas" 会
+    # 先命中 "Hellas Verona"（341 场，"las" 是 "Hellas" 的子串），那是意甲
+    # 球队，完全无关。候选列表只能当线索，必须人工确认再写。
     # MLS —— 上面那条"去掉尾部 FC/AFC"的规则是照欧洲联赛的习惯写的，那边
     # "Arsenal FC" 的 FC 只是通用后缀，去掉不影响识别。但"Los Angeles FC"
     # （官方队名就叫 LAFC）不一样，FC 是队名本身的一部分，去掉之后变成
@@ -1072,6 +1105,19 @@ def run_full_update(db: Session) -> dict:
                         if sub_fail:
                             # 不静默——半成功也要在界面的状态条上看得见
                             failed_comps.append("%s（部分）: %s" % (comp.code, "; ".join(sub_fail)))
+                    elif comp.code in _ODDS_FIXTURE_COMPETITIONS:
+                        # 历史走 openfootball，赛程走 The Odds API，见上方注释。
+                        played = fetch_results(comp)
+                        try:
+                            upcoming = odds_api.fetch_upcoming_events(comp.code)
+                        except Exception as se:
+                            # 赛程拿不到（没配 key、额度用尽、该联赛暂时没开盘）
+                            # 不该把已经抓到的历史赛果一起回滚——那批是训练和
+                            # 回测的基础，而且本来就已经在库里了。记成部分失败。
+                            upcoming = []
+                            failed_comps.append("%s（赛程）: %s" % (comp.code, str(se)[:120]))
+                            logging.getLogger("valuebet.updater").warning(
+                                "[%s] Odds API 赛程抓取失败: %s", comp.code, str(se)[:200])
                     else:
                         played = fetch_results(comp)
                         upcoming = fetch_upcoming(comp)
