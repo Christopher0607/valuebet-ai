@@ -64,6 +64,9 @@ COMPETITION_SCOPE = {
     # 西甲↔西乙21支。英乙单独看跟上层只共享7支，是靠英甲这一级连上去的，
     # 所以这三个必须一起在同一张表里训练，见 train_mle_club.py 的说明。
     "leagueone": "club", "leaguetwo": "club", "segunda": "club",
+    # 全国联赛（英格兰第五级）。它没有 .json 镜像，训练数据走 .txt，
+    # 见 train_mle_club.py 的 TXT_LEAGUES。桥：跟英乙共享升降级球队。
+    "nationalleague": "club",
     "mls": "mls",
     "efl_cup": "efl_cup",
 }
@@ -74,6 +77,7 @@ COMPETITION_NEUTRAL = {
     "epl": False, "laliga": False, "seriea": False, "bundesliga": False,
     "ligue1": False, "championship": False,      # 常规主客场联赛
     "leagueone": False, "leaguetwo": False, "segunda": False,
+    "nationalleague": False,
     "ucl": False,     # 欧冠只有决赛在中立场，训练数据里已按轮次区分，这里取多数情况
     "mls": False,
     "efl_cup": False,  # 联赛杯只有决赛中立场，跟欧冠同样处理，取多数情况

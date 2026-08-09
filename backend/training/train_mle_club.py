@@ -1,5 +1,5 @@
 """
-俱乐部联赛 MLE 训练 —— 九个联赛 + 欧冠，训练成**一张**共享参数表。
+俱乐部联赛 MLE 训练 —— 十个联赛 + 欧冠，训练成**一张**共享参数表。
 
 为什么不是每个联赛一张表（这是原计划，跑通数据后发现是错的）：
     MLE 拟合的 attack/defense 只在同一个训练池内部可比。数学上，给某联赛
@@ -31,7 +31,8 @@ import requests
 from datetime import date, datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from app.updater import normalize_team_name, _extract_final_score  # noqa: E402
+from app.updater import (normalize_team_name, _extract_final_score,  # noqa: E402
+                         parse_openfootball_txt)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from train_mle import load_matches, build_team_index, fit_parameters  # noqa: E402
@@ -75,6 +76,19 @@ DOMESTIC_SEASONS = [
 UCL_SEASONS = [
     "2014-15", "2015-16", "2016-17", "2017-18", "2018-19", "2019-20", "2024-25",
 ]
+
+# 只有 .txt 源、没有 .json 镜像的联赛。football.json 里 en.5 全部赛季 404
+# （逐季验过），只能直接读 openfootball/england 的 .txt。
+#
+# 这批文件有个坑：已完赛的旧赛季会整份省掉年份（首个日期行写 "Sat Aug 6"
+# 而不是 "Sat Aug 6 2022"）。以前 parse_openfootball_txt 遇到这种会一路
+# 跳过、解析出 0 场且不报错。现在传 season_start_year 兜底，实测
+# 2019-20~2023-24 五季从 0 场恢复到 451/462/506/552/552 场。
+TXT_LEAGUES = {
+    "en.5": ("英格兰全国联赛",
+             "https://raw.githubusercontent.com/openfootball/england/master/{season}/5-nationalleague.txt",
+             ["2019-20", "2020-21", "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]),
+}
 
 OUT_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "historical_results_club.csv")
 OUT_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fitted_parameters_club.json")
@@ -121,6 +135,33 @@ def collect_domestic() -> list:
     return rows
 
 
+def collect_txt_leagues() -> list:
+    """读只有 .txt 源的联赛（目前只有英格兰全国联赛）。"""
+    rows = []
+    for code, (label, template, seasons) in TXT_LEAGUES.items():
+        got = 0
+        for season in seasons:
+            r = requests.get(template.replace("{season}", season), timeout=25)
+            if r.status_code != 200:
+                continue
+            r.encoding = "utf-8"    # 同 updater：别让 requests 猜成 ISO-8859-1
+            for m in parse_openfootball_txt(r.text, season_start_year=int(season[:4])):
+                score = _extract_final_score(m.get("score"))
+                if score is None:
+                    continue
+                rows.append({
+                    "date": m["date"],
+                    "home_team": normalize_team_name(m["team1"]),
+                    "away_team": normalize_team_name(m["team2"]),
+                    "home_score": score[0], "away_score": score[1],
+                    "tournament": code,
+                    "neutral": "FALSE",
+                })
+                got += 1
+        print(f"   {label} ({code}): {got} 场")
+    return rows
+
+
 def collect_ucl() -> list:
     rows = []
     total = 0
@@ -155,6 +196,8 @@ def collect_ucl() -> list:
 def build_csv():
     print("📥 抓取各国联赛...")
     domestic = collect_domestic()
+    print("\n📥 抓取只有 .txt 源的联赛...")
+    domestic += collect_txt_leagues()
     print("\n📥 抓取欧冠（跨联赛校准用）...")
     ucl = collect_ucl()
 

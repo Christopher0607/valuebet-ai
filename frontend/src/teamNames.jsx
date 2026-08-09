@@ -401,6 +401,36 @@ export const TEAM_ZH = {
   "UE Llagostera": "利亚戈斯特拉",
   "Yeovil Town": "约维尔",
   "York City": "约克城",
+
+  // ── 英格兰全国联赛（第五级，2026-08 接入）──────────────
+  // 这一级很多是半职业球队，中文译名以音译为主。
+  "AFC Fylde": "法尔德",
+  "Aldershot Town": "奥尔德肖特",
+  "Altrincham": "阿尔特林厄姆",
+  "Boreham Wood": "博勒姆伍德",
+  "Boston United": "波士顿联",
+  "Brackley Town": "布拉克利",
+  "Braintree Town": "布伦特里",
+  "Chorley": "乔利",
+  "Dorking Wanderers": "多尔金",
+  "Dover Athletic": "多佛竞技",
+  "Eastleigh": "伊斯特利",
+  "Ebbsfleet United": "埃布斯福利特",
+  "Gateshead": "盖茨黑德",
+  "Halifax Town": "哈利法克斯",
+  "Kidderminster Harriers": "基德明斯特",
+  "King's Lynn": "金斯林",
+  "Maidenhead United": "梅登黑德",
+  "Maidstone United": "梅德斯通",
+  "Oxford City": "牛津城",
+  "Solihull Moors": "索利赫尔",
+  "Sutton United": "萨顿联",
+  "Tamworth": "塔姆沃思",
+  "Torquay United": "托基联",
+  "Truro City": "特鲁罗",
+  "Wealdstone": "威尔德斯通",
+  "Weymouth": "韦茅斯",
+  "Woking": "沃金",
 };
 
 // ── 语言切换（只影响队伍名，其余界面文字保持中文不变） ──────────

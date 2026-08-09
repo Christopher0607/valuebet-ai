@@ -134,6 +134,12 @@ def _seed_default_competition():
             ("leagueone", "EFL League One", "英甲", f"{BASE}/en.3.json", True),
             ("leaguetwo", "EFL League Two", "英乙", f"{BASE}/en.4.json", True),
             ("segunda", "LaLiga 2", "西乙", f"{BASE}/es.2.json", True),
+            # 全国联赛（英格兰第五级）比较特殊：football.json 镜像**没有**
+            # en.5（逐季验过全是 404），所以 data_source 直接写 .txt 模板。
+            # _resolve_data_source 对每个赛季是「先试 .json 再试 .txt」，
+            # 这里 .json 那一路必然 404，会自动落到下面 _TXT_SOURCES 那条。
+            ("nationalleague", "National League", "英格兰全国联赛",
+             f"{BASE}/en.5.json", True),
             ("ucl", "UEFA Champions League", "欧冠", f"{BASE}/uefa.cl.json", True),
             # 这两个数据源不是 openfootball，走完全不同的抓取路径（见
             # updater.py 的 run_full_update 里对 code 的分支判断），data_source

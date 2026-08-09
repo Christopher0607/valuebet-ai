@@ -252,6 +252,8 @@ _TXT_SOURCES = {
     "en.3": "https://raw.githubusercontent.com/openfootball/england/master/{season}/3-league1.txt",
     "en.4": "https://raw.githubusercontent.com/openfootball/england/master/{season}/4-league2.txt",
     "es.2": "https://raw.githubusercontent.com/openfootball/espana/master/{season}/2-liga2.txt",
+    # 全国联赛：这条是唯一来源，不是兜底——football.json 没有 en.5。
+    "en.5": "https://raw.githubusercontent.com/openfootball/england/master/{season}/5-nationalleague.txt",
     # 法甲没有可用的 .txt 源：openfootball/france 仓库实测没有任何赛季的
     # ligue1 赛程文件（各种文件名/赛季组合都试过，全 404），europe 仓库同样
     # 没有。所以法甲只能靠 .json 镜像，而镜像目前最新只到 2025-26（已完赛）。
@@ -295,7 +297,7 @@ _TXT_RESULT_V = re.compile(
 _TXT_ROUND = re.compile(r"^\s*[▪»]\s*(.+?)\s*$")
 
 
-def parse_openfootball_txt(text: str) -> list:
+def parse_openfootball_txt(text: str, season_start_year: int = None) -> list:
     """把 openfootball 的 .txt 赛程解析成跟 .json 同形的记录。
 
     产出的字段跟 football.json 对齐（date / team1 / team2 / score / round），
@@ -308,6 +310,12 @@ def parse_openfootball_txt(text: str) -> list:
         不能只看行首是不是 "("——续行是 "Antoine SEMENYO 64', 76')"，
         行首没有括号，但它仍然属于上一行的括号块
       · 没写时间的比赛沿用同一天上一场的时间
+      · **旧赛季文件会整份省掉年份**——首个日期行写成 "Sat Aug 6" 而不是
+        "Sat Aug 6 2022"。以前遇到这种就一路 continue，整份文件解析出 0 场，
+        而且不报错（HTTP 200、文件 36KB，看起来一切正常）。实测：全国联赛
+        2019-20~2023-24 五季全是这种写法，2024-25 和英超 2026-27 才带年份。
+        season_start_year 就是为此加的兜底，调用方知道自己在抓哪个赛季。
+        不传时行为跟以前完全一致（拿不到年份就跳过），不影响任何现有调用。
     """
     out = []
     year = None
@@ -344,6 +352,16 @@ def parse_openfootball_txt(text: str) -> list:
             mon, day, yr = _MONTHS[m.group(1)], int(m.group(2)), m.group(3)
             if yr:
                 year = int(yr)
+            elif season_start_year is not None:
+                # 整份文件没有年份时，**每一行都直接按月份定年**，不要用
+                # 下面那条累加式翻年。原因是这些 .txt 按「轮次」编排，同一
+                # 份文件里的日期并不严格递增（补赛、改期会插在后面的轮次里），
+                # 每次月份回退都 year += 1 会失控——实测全国联赛 2025-26
+                # 被推到 2032 年，296 场已完赛的日期范围变成 2025-08~2031-12，
+                # 还凭空多出 256 场"未来比赛"。
+                # 赛季跨年是确定的：欧洲联赛 7 月以后开季，所以 7-12 月属于
+                # 起始年、1-6 月属于次年，直接算即可，不累加就不会漂移。
+                year = season_start_year if mon >= 7 else season_start_year + 1
             elif year is None:
                 continue                      # 还没见过任何年份，无从推断
             elif cur_date and mon < cur_date.month:
@@ -451,7 +469,12 @@ def _fetch_matches(comp: models.Competition, start_back: int = 0) -> list:
         # requests 对 text/plain 会按 ISO-8859-1 猜编码，而这些文件是 UTF-8
         # （München、Atlético 都会被毁掉）。显式指定，别让它猜。
         r.encoding = "utf-8"
-        return parse_openfootball_txt(r.text)
+        # 从 URL 里把赛季起始年抠出来传进去。上游万一发布一份没写年份的
+        # 文件，以前会静默解析出 0 场（HTTP 200、内容也在，只是全被跳过），
+        # 表现为"这个联赛突然一场比赛都没有"，很难查。
+        m_season = re.search(r"/(\d{4})-\d{2}/", url)
+        return parse_openfootball_txt(
+            r.text, season_start_year=int(m_season.group(1)) if m_season else None)
     return r.json()["matches"]
 
 
