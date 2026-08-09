@@ -567,11 +567,28 @@ def _is_bracket_placeholder(name: str) -> bool:
 
 
 def fetch_upcoming(comp: models.Competition) -> list:
+    """「没有比分」不等于「还没踢」——日期已经过去的那一批必须剔掉。
+
+    上游 openfootball 的赛季文件是**整季赛程先发布、比分后面逐周回填**，
+    而回填经常烂尾：football.json 镜像的 2025-26 英甲文件里 552 场只填了
+    356 场比分，剩下 196 场是 2025-09〜2026-05 的真实比赛，只是没人补数据。
+    只按「有没有比分」分类的话，这 196 场会全部被当成"即将开赛"存进库，
+    日期还停在去年。实测四个联赛都中招（2026-08-09，今天之前的日期）：
+
+        英甲 196 场 · 英乙 288 场 · 西乙 331 场 · 全国联赛 268 场
+
+    前端有 `m.date >= today` 兜底，所以界面上没有出现假赛程；但脏数据照样
+    进了库，而且会让"上游发布新赛季了没有"这个判断永远为真——本来想做的
+    「openfootball 一旦发布 2026-27 就自动接管 The Odds API」会因此永不触发。
+    所以修在源头：过去的日期一律不算赛程。
+    """
+    today = date_cls.today().isoformat()
     out = []
     for m in _fetch_matches(comp):
         has_score = _extract_final_score(m.get("score")) is not None
         placeholder = _is_bracket_placeholder(m.get("team1", "")) or _is_bracket_placeholder(m.get("team2", ""))
-        if not has_score and not placeholder:
+        # 用字符串比 ISO 日期是安全的：YYYY-MM-DD 的字典序等于时间序
+        if not has_score and not placeholder and m.get("date", "") >= today:
             out.append(m)
     return out
 
@@ -1106,18 +1123,31 @@ def run_full_update(db: Session) -> dict:
                             # 不静默——半成功也要在界面的状态条上看得见
                             failed_comps.append("%s（部分）: %s" % (comp.code, "; ".join(sub_fail)))
                     elif comp.code in _ODDS_FIXTURE_COMPETITIONS:
-                        # 历史走 openfootball，赛程走 The Odds API，见上方注释。
+                        # 历史走 openfootball，赛程**优先**也走 openfootball，
+                        # 只有它拿不出赛程时才退到 The Odds API，见上方注释。
+                        #
+                        # 顺序是这样定的：openfootball 给的是整季赛程（含轮次），
+                        # The Odds API 只给博彩公司已开盘的近期几场，而且吃额度。
+                        # 所以一旦上游发布 2026-27，就该让它接管——写成「非空则用」
+                        # 之后这个接管是自动的，不用回来改代码。
+                        #
+                        # 这个自动接管能成立的前提是 fetch_upcoming 已经把
+                        # 「过去日期的无比分比赛」剔干净了（见那个函数的注释）：
+                        # 不剔的话旧赛季烂尾的 196/288/331 场会让它恒为非空，
+                        # 永远轮不到 The Odds API。两处改动是一起的。
                         played = fetch_results(comp)
-                        try:
-                            upcoming = odds_api.fetch_upcoming_events(comp.code)
-                        except Exception as se:
-                            # 赛程拿不到（没配 key、额度用尽、该联赛暂时没开盘）
-                            # 不该把已经抓到的历史赛果一起回滚——那批是训练和
-                            # 回测的基础，而且本来就已经在库里了。记成部分失败。
-                            upcoming = []
-                            failed_comps.append("%s（赛程）: %s" % (comp.code, str(se)[:120]))
-                            logging.getLogger("valuebet.updater").warning(
-                                "[%s] Odds API 赛程抓取失败: %s", comp.code, str(se)[:200])
+                        upcoming = fetch_upcoming(comp)
+                        if not upcoming:
+                            try:
+                                upcoming = odds_api.fetch_upcoming_events(comp.code)
+                            except Exception as se:
+                                # 赛程拿不到（没配 key、额度用尽、该联赛暂时没开盘）
+                                # 不该把已经抓到的历史赛果一起回滚——那批是训练和
+                                # 回测的基础，而且本来就已经在库里了。记成部分失败。
+                                upcoming = []
+                                failed_comps.append("%s（赛程）: %s" % (comp.code, str(se)[:120]))
+                                logging.getLogger("valuebet.updater").warning(
+                                    "[%s] Odds API 赛程抓取失败: %s", comp.code, str(se)[:200])
                     else:
                         played = fetch_results(comp)
                         upcoming = fetch_upcoming(comp)
