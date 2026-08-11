@@ -16,18 +16,48 @@ const API = import.meta.env.VITE_API_BASE
   ? import.meta.env.VITE_API_BASE.replace(/\/$/, "")
   : (import.meta.env.DEV ? "http://127.0.0.1:8000/api" : "/api");
 
+// 请求超时。fetch 默认**没有超时**，这不是理论问题——线上真的踩到了：
+// 后端没有报错、只是挂着不回应（免费档实例内存吃紧、或者正在写库），
+// 于是 loadAll 里那个 Promise.all 永远不 settle，loading 一直是 true，
+// 界面就是一个转不完的圈，而且**一句报错都没有**，完全没法判断是后端慢、
+// 后端挂了、还是前端自己的 bug。
+//
+// 45 秒是按最坏情况定的：/matches 现在有九千多场，免费档 + 远端 Postgres
+// 上冷启动后的第一次请求实测要十几秒，给到三倍余量。串关搜索单独放宽到
+// 120 秒——它本来就要评估二十多万个组合，免费档 CPU 慢，正常也要几十秒。
+const DEFAULT_TIMEOUT_MS = 45000;
+const SLOW_PATHS = { "/parlay/suggest": 120000, "/update-now": 120000 };
+
 async function api(path, opts) {
   // 启用认证时每个请求都要带令牌。getToken 会在令牌快过期时自动续期，
   // 所以这里不需要自己管刷新。
   const token = await getToken();
-  const res = await fetch(API + path, {
-    ...opts,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(opts?.headers || {}),
-    },
-  });
+  const limit = SLOW_PATHS[path] || DEFAULT_TIMEOUT_MS;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), limit);
+  let res;
+  try {
+    res = await fetch(API + path, {
+      ...opts,
+      signal: ctl.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(opts?.headers || {}),
+      },
+    });
+  } catch (e) {
+    if (e.name === "AbortError") {
+      // 说清楚是"超时"而不是"连不上"——两者的排查方向完全不同：
+      // 连不上是后端没起/地址错/CORS，超时是后端起着但太慢或卡死。
+      const err = new Error(`${path} 超过 ${limit / 1000} 秒没有响应（后端在跑，但没回应）`);
+      err.timeout = true;
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   if (res.status === 401) {
     // 令牌失效：抛一个可识别的错误，App 会切回登录页而不是显示
     // 「后端连不上」——那句话在这里是错的，后端好得很，是你没登录。
@@ -267,6 +297,15 @@ function AppInner() {
       if (e.unauthorized) {          // 没登录/令牌过期 —— 不是后端挂了
         setSession(null); setApiError(null); setStarting(false);
         setLoading(false);
+        return;
+      }
+      // 超时**不重试**。上面那套重试是为"后端还没就绪"设计的——那种情况
+      // 连接会立刻被拒，重试几轮很快就成了。超时是另一回事：后端在跑，只是
+      // 慢或者卡住了，再打六次只会往一台已经吃力的机器上继续堆请求，而且
+      // 6×45 秒等于四分半钟不给用户任何反馈。直接把超时报出来。
+      if (e.timeout) {
+        if (silent) setRefreshFailed(true);
+        else { setApiError(e.message); setStarting(false); }
         return;
       }
       if (retryRef.current < 6) {
