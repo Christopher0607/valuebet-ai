@@ -453,12 +453,26 @@ def list_matches(status_filter: Optional[str] = None, competition_id: Optional[i
 
 
 def _pred_dict(p: Prediction):
+    """只回前端真正会读的字段。
+
+    原来还回 attack_home / defense_home / attack_away / defense_away /
+    predicted 五个字段——前端**一处都没用**（全仓库 grep 过：
+    prob_* 8 次、is_correct 3 次、rps 2 次、data_backing 2 次、xg_* 各 1 次，
+    这五个 0 次）。它们照样跟着每一场比赛发一遍。
+
+    以前无所谓，现在有所谓了：接入 6 个联赛之后 /api/matches 从 1,700 场
+    涨到 5,900 场，这五个字段等于凭空多发近三万个数。手机上流量和 JSON
+    解析都是实打实的成本。
+
+    数据库里照旧存着这五个字段（Prediction 表没动），要按球队查 attack/
+    defense 有 /api/bayesian-states，要看单场的完整拆解有
+    /api/score-distribution/{match_id}——都在，只是不该让每一场比赛都
+    顺带发一份没人读的副本。
+    """
     return {
         "prob_home": p.prob_home, "prob_draw": p.prob_draw, "prob_away": p.prob_away,
         "xg_home": p.xg_home, "xg_away": p.xg_away,
-        "attack_home": p.attack_home, "defense_home": p.defense_home,
-        "attack_away": p.attack_away, "defense_away": p.defense_away,
-        "predicted": p.predicted, "is_correct": p.is_correct, "rps": p.rps,
+        "is_correct": p.is_correct, "rps": p.rps,
     }
 
 
@@ -1033,10 +1047,20 @@ def suggest_parlay_combinations(payload: ParlaySuggestInput, db: Session = Depen
 
     settings = _get_or_create_settings(db, _owner_key(user))
 
+    # 一次把用到的比赛和预测全查出来，不要在循环里一场一场查。
+    # 原来是每场 2 次查询（Match + Prediction）——本地 SQLite 是进程内调用
+    # 看不出来，换成云端远端 Postgres，每次往返几十毫秒，选 60 场就是 121 次
+    # 往返、纯等网络好几秒。这跟 /api/matches 当初踩的是同一个 N+1，那边
+    # 已经改成批量了，这边漏掉了。
+    ids = [m.match_id for m in payload.matches]
+    matches_by_id = {x.id: x for x in db.query(Match).filter(Match.id.in_(ids)).all()}
+    preds_by_id = {p.match_id: p for p in
+                   db.query(Prediction).filter(Prediction.match_id.in_(ids)).all()}
+
     match_odds_list = []
     for m in payload.matches:
-        match = db.query(Match).filter_by(id=m.match_id).first()
-        pred = db.query(Prediction).filter_by(match_id=m.match_id).first()
+        match = matches_by_id.get(m.match_id)
+        pred = preds_by_id.get(m.match_id)
         if not match or not pred:
             continue  # skip silently — a match the user picked but that has no prediction yet
         match_odds_list.append({

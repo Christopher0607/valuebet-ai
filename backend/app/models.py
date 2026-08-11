@@ -354,6 +354,7 @@ class PriceLog(Base):
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_add_missing_columns()
+    _migrate_add_missing_indexes()
 
 
 # create_all() 只会给"整张表都不存在"的情况建表——对已经存在的表，就算
@@ -377,6 +378,51 @@ _SCHEMA_PATCHES = [
     ("withdrawals", "owner_id", "VARCHAR"),
     ("odds", "owner_id", "VARCHAR"),
 ]
+
+
+# 外键**不会**自动带索引 —— Postgres 和 SQLite 都不会（自动建索引的只有
+# 主键和 unique 约束）。实测 EXPLAIN QUERY PLAN，这三个查询全是全表扫：
+#
+#   SELECT * FROM matches WHERE competition_id=?   → SCAN matches
+#   SELECT * FROM odds WHERE match_id IN (...)     → SCAN odds
+#   SELECT * FROM bets WHERE match_id=?            → SCAN bets
+#
+# 对比 predictions.match_id 因为声明了 unique=True，自动有索引，同样的查询
+# 是 SEARCH ... USING INDEX。
+#
+# 以前无所谓：matches 才一千多行。接入 6 个联赛之后是 5,964 行，而
+# upsert_matches 每个赛事都要 `filter_by(competition_id=...)` 查一次——
+# 一轮更新 14 个赛事就是 14 次全表扫。本地 SQLite 是进程内的，扫也就扫了；
+# 云端远端 Postgres 上这是实打实的开销。
+#
+# CREATE INDEX IF NOT EXISTS 两边语法一致（不像 ADD COLUMN 那样要分叉），
+# 幂等，每次启动都能跑。
+_INDEX_PATCHES = [
+    ("ix_matches_competition_id", "matches", "competition_id"),
+    ("ix_matches_status_date", "matches", "status, date"),
+    ("ix_odds_match_id", "odds", "match_id"),
+    ("ix_bets_match_id", "bets", "match_id"),
+    ("ix_real_bets_match_id", "real_bets", "match_id"),
+    ("ix_parlay_legs_match_id", "parlay_legs", "match_id"),
+    ("ix_parlay_legs_parlay_bet_id", "parlay_legs", "parlay_bet_id"),
+]
+
+
+def _migrate_add_missing_indexes():
+    """建索引。跟加列分开写是因为这两件事的失败后果不一样：
+
+    少一列会让写库直接报错，少一个索引只是慢——所以这里对单个索引的失败
+    只记日志不抛，不能让一个建不出来的索引挡住整个服务启动。
+    """
+    import logging
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        for name, table, cols in _INDEX_PATCHES:
+            try:
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({cols})"))
+            except Exception as e:
+                logging.getLogger("valuebet.models").warning(
+                    "建索引 %s 失败（只影响速度，不影响正确性）: %s", name, str(e)[:200])
 
 
 def _migrate_add_missing_columns():
