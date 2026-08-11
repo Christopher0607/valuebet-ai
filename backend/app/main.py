@@ -8,10 +8,10 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, insert
 from datetime import datetime
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import logging
 import os
 
@@ -500,6 +500,60 @@ class OddsInput(BaseModel):
     odds_home: float
     odds_draw: Optional[float] = None
     odds_away: float
+    # 只算 EV、不落库。默认 True 保持原行为不变。
+    #
+    # 需要它是因为市场赔率现在会自动预填进输入框：卡片一展开，前端就会拿
+    # 预填值请求一次 EV，如果照存，用户根本没碰过的市场价就变成了"他自己
+    # 填的价"。后果不只是名义上的——latest_odds 会永久盖过 market_odds，
+    # 那场比赛显示的价从此冻在展开的那一刻，再也不跟着市场更新。
+    # 所以：值还等于市场预填时传 save=false，用户改过了才落库。
+    save: bool = True
+
+
+class OddsBulkInput(BaseModel):
+    items: List[OddsInput]
+
+
+@app.post("/api/odds/bulk")
+def submit_odds_bulk(payload: OddsBulkInput, db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
+    """一次存多场的赔率，只写一个事务。
+
+    为什么需要它：串关页点「生成推荐组合」时会把选中比赛的赔率存回后端，
+    原来是**每场发一个 POST /api/odds**。以前串关候选池里只有用户手填过
+    赔率的那几场，撑死十几个请求，没人觉得有问题；接进市场赔率自动导入
+    之后，候选池一下变成上百场，用户真的选了 115 场——于是变成 115 个
+    并发请求、460 次 SQL、115 次写事务。
+
+    浏览器对同一域名并发上限约 6 条，云端连接池只有 5+5 条，115 个请求
+    先在浏览器排 19 批、再在服务端抢连接，Render 免费档的请求超时一到就
+    切断连接，前端看到的就是 "Failed to fetch"。这是实测复现出来的，
+    不是推测（见 validation/23_bulk_odds_regression.py）。
+
+    这里刻意**不返回 EV**：调用方（串关页）本来就把返回值丢掉了
+    （原代码 .catch(() => null)），单场页要算 EV 继续走 POST /api/odds。
+    少算一遍 EV 也省掉每场两次查询。
+    """
+    if not payload.items:
+        return {"saved": 0, "skipped": 0}
+    owner = _owner_key(user)
+    ids = [it.match_id for it in payload.items]
+    known = {row.id for row in db.query(Match.id).filter(Match.id.in_(ids)).all()}
+
+    rows = [{
+        "match_id": it.match_id, "source": "manual", "owner_id": owner,
+        "odds_home": it.odds_home, "odds_draw": it.odds_draw, "odds_away": it.odds_away,
+        "recorded_at": datetime.utcnow(),
+    } for it in payload.items if it.match_id in known]
+    skipped = len(payload.items) - len(rows)
+
+    if rows:
+        # 走 Core 的 executemany，不用 ORM 的 db.add()。差别是实测出来的：
+        # 115 行用 db.add() 是 231 条 SQL（ORM 要逐行取回自增主键），
+        # 这里是 2 条。本地 SQLite 差 165ms 看不太出来，云端远端 Postgres
+        # 上每条 SQL 都是一次网络往返，229 次和 2 次是完全不同的量级。
+        db.execute(insert(Odds), rows)
+    db.commit()
+    return {"saved": len(rows), "skipped": skipped}
 
 
 @app.post("/api/odds")
@@ -508,11 +562,12 @@ def submit_odds(payload: OddsInput, db: Session = Depends(get_db), user: Optiona
     if not match:
         raise HTTPException(404, "Match not found")
 
-    db.add(Odds(
-        match_id=payload.match_id, source="manual", owner_id=_owner_key(user),
-        odds_home=payload.odds_home, odds_draw=payload.odds_draw, odds_away=payload.odds_away,
-    ))
-    db.commit()
+    if payload.save:
+        db.add(Odds(
+            match_id=payload.match_id, source="manual", owner_id=_owner_key(user),
+            odds_home=payload.odds_home, odds_draw=payload.odds_draw, odds_away=payload.odds_away,
+        ))
+        db.commit()
 
     pred = db.query(Prediction).filter_by(match_id=payload.match_id).first()
     if not pred:

@@ -1306,9 +1306,17 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
     let cancelled = false;
     const t = setTimeout(async () => {
       try {
+        // 值还等于市场预填时只算 EV、不落库（save:false）。照存的话，用户
+        // 根本没碰过的市场价会变成"他自己填的价"，而且 latest_odds 会永久
+        // 盖过 market_odds——那场比赛显示的价从此冻在展开卡片的那一刻，
+        // 再也不跟着市场更新。改过了才存。
+        const same = (x, y) => (x == null && y == null) || Math.abs((x || 0) - (y || 0)) < 1e-9;
+        const untouched = !!mkt && same(h, mkt.avg_home) && same(d || null, mkt.avg_draw)
+                          && same(a, mkt.avg_away);
         const result = await api("/odds", {
           method: "POST",
-          body: JSON.stringify({ match_id: match.id, odds_home: h, odds_draw: d || null, odds_away: a }),
+          body: JSON.stringify({ match_id: match.id, odds_home: h, odds_draw: d || null,
+                                 odds_away: a, save: !untouched }),
         });
         if (!cancelled) setCalc({ h, d: d || null, a, ...result });
       } catch (e) {
@@ -2300,17 +2308,34 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
         odds_away: odds[id]?.away ? +odds[id].away : null,
       }));
 
-      // 把赔率存回后端，这样刷新页面后还在（之前只存在 React state 里，一刷新就丢）
-      await Promise.all(matches
-        .filter(m => m.odds_home && m.odds_away)
-        .map(m => api("/odds", {
+      // 把赔率存回后端，这样刷新页面后还在（之前只存在 React state 里，一刷新就丢）。
+      //
+      // 两处跟原来不一样，都是为了修 "Failed to fetch"：
+      //
+      // 1) 走 /odds/bulk，一个请求搞定。原来是**每场一个 POST**——以前候选池
+      //    里只有手填过赔率的那几场，撑死十几个请求；接进市场赔率自动导入后
+      //    用户能选 115 场，就变成 115 个并发请求、115 次写事务，浏览器排 19
+      //    批、服务端连接池只有 10 条，超时一到连接被切断，前端报 Failed to fetch。
+      //
+      // 2) **只存用户真正改过的价**。市场价是每轮更新自动刷新的，把它原样
+      //    存成"用户填的价"有两个坏处：一是本来就不是用户填的，二是存完之后
+      //    latest_odds 会永久盖过 market_odds，界面上那个价就冻在当时那一刻，
+      //    再也不跟着市场更新了。
+      const edited = matches.filter(m => {
+        if (!m.odds_home || !m.odds_away) return false;
+        const mk = matchById[m.match_id]?.market_odds;
+        if (!mk) return true;                  // 没有市场价，那必然是手填的
+        const same = (a, b) => (a == null && b == null) || Math.abs((a || 0) - (b || 0)) < 1e-9;
+        return !(same(m.odds_home, mk.avg_home) &&
+                 same(m.odds_draw, mk.avg_draw) &&
+                 same(m.odds_away, mk.avg_away));
+      });
+      if (edited.length) {
+        await api("/odds/bulk", {
           method: "POST",
-          body: JSON.stringify({
-            match_id: m.match_id, odds_home: m.odds_home,
-            odds_draw: m.odds_draw, odds_away: m.odds_away,
-          }),
-        }).catch(() => null))   // 存赔率失败不该挡住搜索结果
-      );
+          body: JSON.stringify({ items: edited }),
+        }).catch(() => null);   // 存赔率失败不该挡住搜索结果
+      }
 
       const r = await api("/parlay/suggest", {
         method: "POST",
