@@ -807,6 +807,7 @@ function AppInner() {
         {!loading && tab === "upcoming" && settings && (
           <div>
             <SL>接下来 {upcoming.length} 场 · 资金 {(+settings.bankroll_total).toLocaleString()} · {(settings.kelly_fraction * 100).toFixed(0)}% 凯利</SL>
+            <BulkMarketOdds matches={upcoming} onDone={() => loadAll(true)} />
             {upcoming.length === 0 && <NoFixtures played={played} stale={stale} />}
             {/* MatchCard 在 match.prediction 为空时直接 return null。原来这里
                 没有对应的空状态，于是「有比赛但都还没算出预测」会表现成：
@@ -2759,6 +2760,67 @@ function Stat({ label, val, color, sub }) {
 // 原来那句「或数据还未抓取——点顶部『立即更新』试试」在休赛期是误导：
 // 点了也没用，上游 openfootball 根本还没发布新赛季的赛程（实测 404）。
 // 库里有完赛数据就说明抓取是通的，那就该说清楚是休赛期，并告诉用户会自动接上。
+// 一键把当前可见的比赛全部填上市场平均价。
+//
+// 单场卡片里点「平均价」那一行也能填，但要一场场展开——有几十场待定价时
+// 这件事本身就成了负担，而自动抓赔率要解决的就是这个。
+//
+// 用**平均价**不是最优价：最优价是全市场某一家的最高报价，你在 BK8 多半
+// 拿不到，拿它算 EV 是给自己发假信号。平均价更接近实际能成交的水平。
+// 想用最优价的话在单场卡片里点那一行，那是逐场的、刻意的选择。
+//
+// 这里的填入是**落库**的（走 /odds/bulk），跟卡片展开时的预填不一样——
+// 预填只是显示、不存，因为用户没做任何选择；点这个按钮是明确的选择，
+// 所以存。存完之后 latest_odds 会盖过 market_odds，那场的价就固定在你
+// 按下按钮的这一刻，不再跟着市场更新——这是对的，你选的就是这个价。
+function BulkMarketOdds({ matches, onDone }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+
+  // 只处理「有市场价、且自己还没填过」的：已经填过的说明用户做过判断，
+  // 不该被一键覆盖掉。
+  const targets = matches.filter(m => m.market_odds?.avg_home && m.market_odds?.avg_away
+                                      && !m.latest_odds?.odds_home);
+  if (!targets.length) return null;
+
+  async function apply() {
+    setBusy(true);
+    try {
+      const r = await api("/odds/bulk", {
+        method: "POST",
+        body: JSON.stringify({
+          items: targets.map(m => ({
+            match_id: m.id,
+            odds_home: m.market_odds.avg_home,
+            odds_draw: m.market_odds.avg_draw ?? null,
+            odds_away: m.market_odds.avg_away,
+          })),
+        }),
+      });
+      setDone(`已填入 ${r.saved} 场`);
+      onDone && onDone();
+    } catch (e) {
+      setDone(`失败：${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 9, margin: "0 0 10px" }}>
+      <button type="button" onClick={apply} disabled={busy}
+        style={{ padding: "6px 12px", borderRadius: 7, fontSize: 11, fontWeight: 700,
+                 border: `1px solid ${C.accent}66`, background: C.accentDim || "transparent",
+                 color: C.accent, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
+        {busy ? "填入中…" : `一键填入市场平均价（${targets.length} 场）`}
+      </button>
+      <span style={{ fontSize: 10, color: C.textDim }}>
+        {done || "只填还没自己定价的场次，已填过的不覆盖"}
+      </span>
+    </div>
+  );
+}
+
 function NoFixtures({ played, stale = [] }) {
   if (!played.length) {
     return <Empty text="还没有任何比赛数据——点顶部「立即更新」抓一次" />;

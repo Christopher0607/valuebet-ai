@@ -135,6 +135,11 @@ TEAM_ALIASES = {
 }
 
 
+# 训练数据用 API-Football 简称的赛事。只有这两个才该套 TEAM_ALIASES——
+# 其余赛事走 club 参数表，队名是 openfootball 全称，套了会改坏。
+_SHORTNAME_LEAGUES = {"mls", "efl_cup"}
+
+
 def fetch_upcoming_events(league_code: str) -> list:
     """返回跟 openfootball 的"未打的比赛"同形的记录（date / team1 / team2 /
     round / time），不含 score 字段——upsert_matches 对 upcoming 列表本来
@@ -151,14 +156,33 @@ def fetch_upcoming_events(league_code: str) -> list:
     r.raise_for_status()
     events = r.json()
 
+    # TEAM_ALIASES **只**给美职联/联赛杯用，绝对不能对所有赛事套。
+    #
+    # 那张表把官方全称转成 API-Football 简称（"Bradford City"→"Bradford"、
+    # "Leicester City"→"Leicester"），因为那两个赛事的训练数据就是用简称的。
+    # 但英甲/英乙/西乙/意乙/德乙/法乙用的是 club 那张表，队名是 openfootball
+    # 的**全称**——原名本来就对得上，套一遍反而改坏。
+    #
+    # 实测代价（线上状态条报出来的）：英甲 8 支、英乙 8 支球队的赛程被
+    # 拒收，全是被这张表改坏的。加闸门之前这批比赛是**静默**进库的，
+    # 队名对不上参数表就退回 (0,0)，界面照样显示看起来正常的概率。
+    #
+    # 当初核对 70 支球队时漏掉这一步：我是拿 Odds API 的原始队名直接跑
+    # normalize_team_name，而真实链路是「先过 TEAM_ALIASES，再 normalize」。
+    # 验证的路径跟生产的路径不一样，所以验证全绿、线上全错。
+    use_aliases = league_code in _SHORTNAME_LEAGUES
+
     out = []
     for ev in events:
         commence = ev["commence_time"]  # "2026-08-08T20:30:00Z"
+        h, a = ev["home_team"], ev["away_team"]
+        if use_aliases:
+            h, a = TEAM_ALIASES.get(h, h), TEAM_ALIASES.get(a, a)
         out.append({
             "date": commence[:10],
             "time": commence[11:16],
-            "team1": TEAM_ALIASES.get(ev["home_team"], ev["home_team"]),
-            "team2": TEAM_ALIASES.get(ev["away_team"], ev["away_team"]),
+            "team1": h,
+            "team2": a,
             "round": "",
         })
     return out
