@@ -138,8 +138,17 @@ def _seed_default_competition():
             # en.5（逐季验过全是 404），所以 data_source 直接写 .txt 模板。
             # _resolve_data_source 对每个赛季是「先试 .json 再试 .txt」，
             # 这里 .json 那一路必然 404，会自动落到下面 _TXT_SOURCES 那条。
+            # 英格兰全国联赛停用（2026-08，用户要求下架）。停的是**界面和抓取**，
+            # 不是数据：
+            #   · 库里 296 场已赛记录原样保留，把下面这个 True 改回去就全回来
+            #   · 训练完全不受影响——train_mle_club.py 读的是
+            #     historical_results_club.csv（en.5 有 3,371 场），不是数据库。
+            #     英乙↔全国联赛那批共享球队的桥照样在，英超到第五级的阶梯不断
+            # 停它的实际理由：第五级半职业联赛，博彩公司不开盘，The Odds API
+            # 的 45 个 soccer key 里没有它，openfootball 也还没发 2026-27，
+            # 所以它既没有未来赛程也没有赔率，摆在界面上只是占位置。
             ("nationalleague", "National League", "英格兰全国联赛",
-             f"{BASE}/en.5.json", True),
+             f"{BASE}/en.5.json", False),
             ("ucl", "UEFA Champions League", "欧冠", f"{BASE}/uefa.cl.json", True),
             # 这两个数据源不是 openfootball，走完全不同的抓取路径（见
             # updater.py 的 run_full_update 里对 code 的分支判断），data_source
@@ -326,10 +335,19 @@ def update_log(db: Session = Depends(get_db)):
 # ══════════════════════════════════════════════════════════
 
 @app.get("/api/competitions")
-def list_competitions(db: Session = Depends(get_db)):
+def list_competitions(include_inactive: bool = False, db: Session = Depends(get_db)):
+    """默认只回启用中的赛事。
+
+    停用的赛事（is_active=False）数据全都还在库里，只是不该再出现在界面上——
+    否则赛事筛选条上会挂着一个点进去什么都没有的按钮。想看全部（比如确认
+    停用的那个还在不在）传 include_inactive=true。
+    """
+    q = db.query(Competition)
+    if not include_inactive:
+        q = q.filter(Competition.is_active == True)     # noqa: E712  SQLAlchemy 需要 == True
     return [{
         "id": c.id, "code": c.code, "name": c.name, "name_zh": c.name_zh, "is_active": c.is_active,
-    } for c in db.query(Competition).all()]
+    } for c in q.all()]
 
 
 # ══════════════════════════════════════════════════════════
@@ -339,7 +357,14 @@ def list_competitions(db: Session = Depends(get_db)):
 @app.get("/api/matches")
 def list_matches(status_filter: Optional[str] = None, competition_id: Optional[int] = None,
                  db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
+    # 停用赛事的比赛不回给前端。不这么做的话，赛事筛选条上虽然没有它的按钮，
+    # 「全部」那个计数里却还包含它的几百场，回测页也照样列出来——等于只藏了
+    # 一半，看起来像 bug。数据在库里一条没删，改回 is_active=True 就全回来。
+    inactive_ids = [c.id for c in db.query(Competition.id).filter(
+        Competition.is_active == False).all()]      # noqa: E712
     q = db.query(Match)
+    if inactive_ids:
+        q = q.filter(~Match.competition_id.in_(inactive_ids))
     if status_filter:
         q = q.filter(Match.status == status_filter)
     if competition_id:

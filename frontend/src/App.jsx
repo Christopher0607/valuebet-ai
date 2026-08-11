@@ -495,6 +495,32 @@ function AppInner() {
   }, [matches]);
   const isProvisional = m => provisionalRounds.has(`${m.competition_id}|${m.round}`);
   const stale    = matches.filter(m => m.status === "upcoming" && m.date < _today && inComp(m));
+
+  // ── 赛事筛选条上显示哪些赛事 ──────────────────────────────
+  // 「预测」和「串关推荐」这两页看的都是未来比赛。一个接下来没有对局的赛事
+  // 在这里挂个按钮只会占位置——点进去是空的。所以这两页只列「确实有未来
+  // 比赛」的赛事，其余页面（回测/虚拟盘/实盘/走势）看的是历史，照旧全列。
+  //
+  // 刻意做成**按未来场次自动判断**，而不是写死哪个赛事下架：英格兰联赛杯
+  // 这类杯赛每年八月才开打，赛季一开、赛程一抓到就自己回来，不用改代码。
+  // 世界杯（已经踢完）和欧冠（正赛还没开盘）同理。
+  const fixtureTab = tab === "upcoming" || tab === "parlay";
+  const compsWithFixtures = useMemo(() => {
+    const s = new Set();
+    for (const m of matches) {
+      if (m.status === "upcoming" && m.date >= _today) s.add(m.competition_id);
+    }
+    return s;
+  }, [matches, _today]);
+  const shownComps = fixtureTab
+    ? competitions.filter(c => compsWithFixtures.has(c.id))
+    : competitions;
+
+  // 选中的赛事在当前页被隐藏了就退回「全部」，否则会停在一个看不见的筛选上，
+  // 页面空着却找不到哪里能取消——从「回测」切到「预测」时就会撞上。
+  useEffect(() => {
+    if (comp != null && fixtureTab && !compsWithFixtures.has(comp)) setComp(null);
+  }, [comp, fixtureTab, compsWithFixtures]);
   const played   = matches.filter(m => m.status === "played" && inComp(m));
   // 注单可能没有 competition_id（老数据，或后端没回填），这时不过滤掉，
   // 宁可多显示也不要让用户以为注单丢了
@@ -683,10 +709,10 @@ function AppInner() {
           ))}
         </div>
 
-        {competitions.length > 0 && (
+        {shownComps.length > 0 && (
           <div className="hscroll" style={{ display: "flex", gap: 4, marginTop: 7, overflowX: "auto", alignItems: "center" }}>
             <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, marginRight: 2, flex: "0 0 auto" }}>赛事</span>
-            {[{ id: null, name_zh: "全部" }, ...competitions].map(c => {
+            {[{ id: null, name_zh: "全部" }, ...shownComps].map(c => {
               const on = comp === c.id;
               const n = c.id == null ? matches.length : matches.filter(m => m.competition_id === c.id).length;
               return (
