@@ -516,6 +516,17 @@ export const TEAM_ZH = {
   "Stade Lavallois": "拉瓦勒",
   "US Boulogne": "布洛涅",
   "USL Dunkerque": "敦刻尔克",
+
+  // 2026-27 三个二级联赛名单里还差的 6 条（2026-08 用真实赛程核对后补）。
+  // 前三条是合并同一俱乐部的多个写法之后，规范名换成了"最近在用"的那个
+  // （Ascoli Picchio→Ascoli Calcio、L.R. Vicenza Virtus→L.R. Vicenza 等），
+  // 所以要按新规范名再加一条 key。
+  "Ascoli Calcio": "阿斯科利",
+  "Benevento Calcio": "贝内文托",
+  "L.R. Vicenza": "维琴察",
+  "Energie Cottbus": "科特布斯能量",
+  "FC St. Pauli": "圣保利",
+  "VfL Osnabrück": "奥斯纳布吕克",
 };
 
 // ── 语言切换（只影响队伍名，其余界面文字保持中文不变） ──────────

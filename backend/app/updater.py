@@ -231,6 +231,61 @@ _CLUB_NAME_ALIASES = {
     # 差点写错的一条，记下来防止以后再犯：用子串找候选时 "Las Palmas" 会
     # 先命中 "Hellas Verona"（341 场，"las" 是 "Hellas" 的子串），那是意甲
     # 球队，完全无关。候选列表只能当线索，必须人工确认再写。
+    # ── 意乙 / 德乙 / 法乙的赛程队名（2026-08）──────────────────
+    # 用户在真机上跑 /v4/sports/{key}/events/ 把三个联赛 48 支球队的真实
+    # 队名贴回来，逐个跑 validation/24_fixture_name_check.py 核对出来的。
+    # 括号里是该规范名在训练数据里的**总场次**（不只是本联赛），每条都核过。
+    #
+    # 意乙 11 条：
+    "Ascoli": "Ascoli Calcio",             # 355 场（含并入的 Ascoli Picchio）
+    "Avellino": "US Avellino",             # 244 场（含并入的 AS Avellino）
+    "Benevento": "Benevento Calcio",       # 278 场
+    "Carrarese": "Carrarese Calcio",       # 69 场
+    "Cremonese": "US Cremonese",           # 351 场
+    "Mantova": "Mantova 1911 SSD",         # 69 场
+    "Padova": "Calcio Padova",             # 109 场
+    "Pisa": "Pisa SC",                     # 274 场（含并入的 AC Pisa）
+    "Südtirol": "FC Südtirol",             # 148 场
+    "US Catanzaro 1929": "US Catanzaro",   # 112 场
+    "Vicenza": "L.R. Vicenza",             # 206 场（含并入的另外两个写法）
+    # 意乙第 20 支球队 Arezzo 没有别名，是因为**真的没有历史数据**——
+    # 它从意丙升上来，it.2 训练数据里查无此队。加别名解决不了，
+    # _reject_unknown_fixture_teams 会把它的比赛挡掉，这是正确行为。
+    #
+    # 德乙 4 条：
+    "1. FC Heidenheim": "1. FC Heidenheim 1846",   # 408 场
+    "FC Energie Cottbus": "Energie Cottbus",       # 68 场（数据停在 2014，
+                                                   # 该队在低级别待了十年才升回来）
+    "Greuther Fürth": "SpVgg Greuther Fürth",      # 385 场
+    "Hertha Berlin": "Hertha BSC",                 # 385 场
+    #
+    # 法乙 7 条（注意 "Annecy FC" 的尾部 FC 会先被通用规则削掉，所以 key
+    # 写的是削完的 "Annecy"）：
+    "Annecy": "FC Annecy",                 # 123 场
+    "Boulogne": "US Boulogne",             # 13 场（样本本来就薄）
+    "Clermont": "Clermont Foot 63",        # 413 场
+    "Guingamp": "EA Guingamp",             # 379 场
+    "Montpellier": "Montpellier HSC",      # 375 场
+    "Nancy": "AS Nancy Lorraine",          # 307 场
+    "Saint Etienne": "AS Saint-Étienne",   # 379 场
+    #
+    # ── 同一家俱乐部被拆成多个名字（训练数据里本来就有的问题）───────
+    # openfootball 跨赛季改过写法，同一家俱乐部因此在参数表里存成两三条，
+    # 每条只拿到一部分比赛。维琴察最严重：当前写法只有 40 场、停在 2022，
+    # 合并后是 206 场。
+    #
+    # 判定依据不是"名字像"，是**赛季互不重叠**——真是两家俱乐部的话必然
+    # 会在同一个赛季里同时出现。四组全部通过这个检验：
+    #   Ascoli Picchio  2015-2017 → Ascoli Calcio   2018-2023
+    #   AS Avellino     2013-2014 → US Avellino     2015-2025
+    #   Vicenza Calcio  2014-2016 → L.R. Vicenza Virtus 2020 → L.R. Vicenza 2021
+    #   AC Pisa         2016-2020 → Pisa SC         2021-2024
+    # 合并方向一律指向**最近在用的那个写法**。
+    "Ascoli Picchio": "Ascoli Calcio",         # 128 场并入，合计 355
+    "AS Avellino": "US Avellino",              # 87 场并入，合计 244
+    "Vicenza Calcio": "L.R. Vicenza",          # 128 场并入
+    "L.R. Vicenza Virtus": "L.R. Vicenza",     # 38 场并入，合计 206
+    "AC Pisa": "Pisa SC",                      # 118 场并入，合计 274
     # MLS —— 上面那条"去掉尾部 FC/AFC"的规则是照欧洲联赛的习惯写的，那边
     # "Arsenal FC" 的 FC 只是通用后缀，去掉不影响识别。但"Los Angeles FC"
     # （官方队名就叫 LAFC）不一样，FC 是队名本身的一部分，去掉之后变成
