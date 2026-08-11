@@ -242,6 +242,7 @@ def fetch_h2h_odds(league_code: str, regions: str = None) -> tuple:
     )
     r.raise_for_status()
     quota = _quota_from(r)
+    use_aliases = league_code in _SHORTNAME_LEAGUES
 
     out = []
     for ev in r.json():
@@ -281,8 +282,12 @@ def fetch_h2h_odds(league_code: str, regions: str = None) -> tuple:
         out.append({
             "date": commence[:10],
             "time": commence[11:16],
-            "team1": TEAM_ALIASES.get(home_raw, home_raw),
-            "team2": TEAM_ALIASES.get(away_raw, away_raw),
+            # 同 fetch_upcoming_events：这张表只对 mls/efl_cup 有意义，
+            # 对走 club 参数表的赛事套一遍会把正确的全称改成对不上的简称，
+            # 结果是市场赔率**一场都匹配不上**（refresh_market_odds 会全部
+            # 计成 unmatched 静默丢掉，配额白花）。
+            "team1": (TEAM_ALIASES.get(home_raw, home_raw) if use_aliases else home_raw),
+            "team2": (TEAM_ALIASES.get(away_raw, away_raw) if use_aliases else away_raw),
             "n_books": books,
             "best_home": max(buckets["home"]), "best_draw": max(buckets["draw"]),
             "best_away": max(buckets["away"]),
@@ -346,6 +351,7 @@ def fetch_recent_scores(league_code: str, days_from: int = 3) -> list:
     """
     if not ODDS_API_KEY:
         raise RuntimeError("ODDS_API_KEY 未配置，跳过美职联/联赛杯的赛果抓取")
+    use_aliases = league_code in _SHORTNAME_LEAGUES
     sport_key = SPORT_KEYS[league_code]
     r = requests.get(
         f"{_BASE}/sports/{sport_key}/scores/",
@@ -376,8 +382,10 @@ def fetch_recent_scores(league_code: str, days_from: int = 3) -> list:
         out.append({
             "date": commence[:10],
             "time": commence[11:16],
-            "team1": TEAM_ALIASES.get(home, home),
-            "team2": TEAM_ALIASES.get(away, away),
+            # 同上。这一路目前只有 mls/efl_cup 在用，但别名照样要按赛事判断，
+            # 免得以后有别的赛事接进来时又踩一遍。
+            "team1": (TEAM_ALIASES.get(home, home) if use_aliases else home),
+            "team2": (TEAM_ALIASES.get(away, away) if use_aliases else away),
             "round": "",
             "score": {"ft": [h, a]},
         })
