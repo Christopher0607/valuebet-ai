@@ -1272,9 +1272,18 @@ function DayGroups({ matches, renderMatch, selectedIds }) {
 function MatchCard({ match, settings, onRefresh, provisional }) {
   const zhTeam = useZhTeam();
   const [open, setOpen] = useState(false);
-  const [oHome, setOHome] = useState(match.latest_odds?.odds_home?.toString() || "");
-  const [oDraw, setODraw] = useState(match.latest_odds?.odds_draw?.toString() || "");
-  const [oAway, setOAway] = useState(match.latest_odds?.odds_away?.toString() || "");
+  // 优先用自己填过的价；没填过就拿市场**平均价**预填。
+  // 用平均价不用最优价是刻意的：最优价是全市场某一家的最高报价，你在 BK8
+  // 大概率拿不到，拿它预填会让 EV 看起来虚高，等于给自己发假信号。平均价
+  // 更接近你实际能成交的水平。两个价都在下面的对比条里显示，要用哪个
+  // 自己按。
+  const mkt = match.market_odds;
+  const [oHome, setOHome] = useState(
+    (match.latest_odds?.odds_home ?? mkt?.avg_home)?.toString() || "");
+  const [oDraw, setODraw] = useState(
+    (match.latest_odds?.odds_draw ?? mkt?.avg_draw)?.toString() || "");
+  const [oAway, setOAway] = useState(
+    (match.latest_odds?.odds_away ?? mkt?.avg_away)?.toString() || "");
   const [calc, setCalc] = useState(null);
   const [stake, setStake] = useState(100);
   const [rStake, setRStake] = useState({});
@@ -1434,6 +1443,41 @@ function MatchCard({ match, settings, onRefresh, provisional }) {
       {open && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: "12px 14px", background: C.surface }}>
           <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8 }}>输入赔率，自动计算真实期望值：</div>
+
+          {/* 市场公开报价（The Odds API 自动抓的，不是 BK8 的价）。
+              两行都给：平均价约等于你实际能成交的水平，最优价是全市场某一家
+              的最高报价。项目走查的结论是「盈亏完全取决于价格执行」——
+              成交价 = 平均价 + f×(最优价−平均价)，f=0 时 ROI −3.54%、
+              f=0.8 才盈亏平衡，所以这两个数的差距本身就是要看的信息。
+              点任一行直接填进输入框，省掉手打。 */}
+          {mkt && (
+            <div style={{ marginBottom: 10, border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                            padding: "5px 9px", background: C.muted, fontSize: 10, color: C.textDim }}>
+                <span>市场报价 · {mkt.n_books} 家博彩公司</span>
+                <span>非 BK8 报价，仅供预填与比价</span>
+              </div>
+              {[
+                { tag: "平均价", h: mkt.avg_home, d: mkt.avg_draw, a: mkt.avg_away,
+                  note: "接近实际成交" },
+                { tag: "最优价", h: mkt.best_home, d: mkt.best_draw, a: mkt.best_away,
+                  note: "全市场最高，未必拿得到" },
+              ].map(row => (
+                <button key={row.tag} type="button"
+                  onClick={() => { setOHome(row.h?.toString() || ""); setODraw(row.d?.toString() || ""); setOAway(row.a?.toString() || ""); }}
+                  style={{ display: "grid", gridTemplateColumns: "58px 1fr 1fr 1fr 96px", gap: 6, width: "100%",
+                           alignItems: "center", padding: "7px 9px", background: "transparent", cursor: "pointer",
+                           border: "none", borderTop: `1px solid ${C.border}`, color: C.text, fontSize: 12, textAlign: "left" }}>
+                  <span style={{ color: C.textDim, fontSize: 10 }}>{row.tag}</span>
+                  <span style={{ fontWeight: 700 }}>{fod(row.h)}</span>
+                  <span style={{ fontWeight: 700 }}>{row.d ? fod(row.d) : "—"}</span>
+                  <span style={{ fontWeight: 700 }}>{fod(row.a)}</span>
+                  <span style={{ color: C.textDim, fontSize: 9, textAlign: "right" }}>{row.note}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 7, alignItems: "flex-end", marginBottom: 10 }}>
             {[
               { label: t1, val: oHome, set: setOHome },
@@ -2093,11 +2137,20 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
   const [odds, setOdds] = useState(() => {
     const init = {};
     for (const m of upcoming) {
-      if (m.latest_odds) {
+      // 自己填过的价优先；没填过就用市场**平均价**兜底，这样自动抓回来的
+      // 比赛不用先去单场页手填一遍才能参与串关搜索。用平均价不用最优价，
+      // 理由跟 MatchCard 一样：最优价你在 BK8 多半拿不到，拿它算 EV 是
+      // 给自己发假信号。
+      const src = m.latest_odds || (m.market_odds && {
+        odds_home: m.market_odds.avg_home,
+        odds_draw: m.market_odds.avg_draw,
+        odds_away: m.market_odds.avg_away,
+      });
+      if (src) {
         init[m.id] = {
-          home: m.latest_odds.odds_home?.toString() || "",
-          draw: m.latest_odds.odds_draw?.toString() || "",
-          away: m.latest_odds.odds_away?.toString() || "",
+          home: src.odds_home?.toString() || "",
+          draw: src.odds_draw?.toString() || "",
+          away: src.odds_away?.toString() || "",
         };
       }
     }
@@ -2121,8 +2174,12 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
   // 定价的比赛也混在列表里，找起来反而费劲。平局赔率允许缺（有些用户
   // 只填主客），主客两边任一没填就当没定价，跟单场那边的校验口径一致
   // （见 MatchCard 的 compute()：!h || !a 直接不算）。
+  // 加上"有市场报价"这一路：以前只认手填的价，导致自动抓回来的比赛必须
+  // 先去单场页手填一遍才会出现在这里，那就等于没自动化。
   const withOdds = useMemo(
-    () => upcoming.filter(m => m.latest_odds?.odds_home && m.latest_odds?.odds_away),
+    () => upcoming.filter(m =>
+      (m.latest_odds?.odds_home && m.latest_odds?.odds_away) ||
+      (m.market_odds?.avg_home && m.market_odds?.avg_away)),
     [upcoming]
   );
 

@@ -18,7 +18,7 @@ import os
 from .models import (
     init_db, get_db, Match, Prediction, Odds, Bet, RealBet, UserSettings,
     Competition, UpdateLog, BayesianTeamStateRow, ParlayBet, ParlayLeg, PriceLog,
-    Withdrawal,
+    Withdrawal, MarketOdds,
 )
 from .updater import run_full_update
 from .scheduler import start_scheduler, next_run_info
@@ -419,6 +419,7 @@ def list_matches(status_filter: Optional[str] = None, competition_id: Optional[i
 
     preds = {}
     latest_odds_by_match = {}
+    market_by_match = {}
     # 分批：SQLite 的 IN 参数个数有上限（老版本 999），Postgres 宽松得多，
     # 取小的那个才两边都安全
     for i in range(0, len(match_ids), 900):
@@ -431,11 +432,17 @@ def list_matches(status_filter: Optional[str] = None, competition_id: Optional[i
         odds_q = _owned(db.query(Odds), Odds, _owner_key(user)).filter(Odds.match_id.in_(chunk))
         for o in odds_q.order_by(Odds.match_id, desc(Odds.recorded_at)).all():
             latest_odds_by_match.setdefault(o.match_id, o)
+        # 市场报价**不**过 _owned：它是公开数据，没有归属。走 _owned 的话
+        # 云端模式会因为 owner_id 为空把它全判成不可见，自动抓回来的赔率
+        # 反而一条都显示不出来。
+        for mo in db.query(MarketOdds).filter(MarketOdds.match_id.in_(chunk)).all():
+            market_by_match[mo.match_id] = mo
 
     out = []
     for m in matches:
         pred = preds.get(m.id)
         latest_odds = latest_odds_by_match.get(m.id)
+        mo = market_by_match.get(m.id)
         out.append({
             "id": m.id, "competition_id": m.competition_id,
             "competition_name": comp_names.get(m.competition_id),
@@ -448,6 +455,14 @@ def list_matches(status_filter: Optional[str] = None, competition_id: Optional[i
             "latest_odds": {
                 "odds_home": latest_odds.odds_home, "odds_draw": latest_odds.odds_draw, "odds_away": latest_odds.odds_away,
             } if latest_odds else None,
+            # 市场公开报价，跟上面「你自己填的」分开。前端拿它预填输入框
+            # 和比价，下注真正用的还是用户确认后的那个价。
+            "market_odds": {
+                "n_books": mo.n_books,
+                "best_home": mo.best_home, "best_draw": mo.best_draw, "best_away": mo.best_away,
+                "avg_home": mo.avg_home, "avg_draw": mo.avg_draw, "avg_away": mo.avg_away,
+                "fetched_at": mo.fetched_at.isoformat() if mo.fetched_at else None,
+            } if mo else None,
         })
     return out
 

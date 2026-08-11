@@ -18,7 +18,7 @@ import threading
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
-from datetime import datetime, date as date_cls
+from datetime import datetime, date as date_cls, timedelta
 from sqlalchemy.orm import Session
 
 from . import models
@@ -1129,6 +1129,96 @@ def _fetch_competition_payload(plan) -> tuple:
     return fetch_results(plan), fetch_upcoming(plan), sub_fail
 
 
+# 只给「未来这么多天内开球」的比赛抓赔率。The Odds API 免费档一个月 500 次
+# 请求，抓赔率是唯一按 sport×region×market 计费的一路，赛程和比分都不计费。
+# 六个有 sport key 的赛事 × 每天 2 次 × 30 天 = 360 次，已经吃掉大半配额，
+# 所以不能见一个赛事就抓——没有近期比赛的赛事直接跳过。
+_ODDS_LOOKAHEAD_DAYS = 5
+
+
+def refresh_market_odds(db: Session) -> dict:
+    """把 The Odds API 的 1X2 报价抓回来，存进 market_odds 表。
+
+    只处理「有 sport key」且「未来 _ODDS_LOOKAHEAD_DAYS 天内真的有比赛」的
+    赛事——这是省配额的关键，见 _ODDS_LOOKAHEAD_DAYS 上面的算术。
+
+    对不上号的比赛静默跳过而不是猜：The Odds API 的队名跟库里的规范队名
+    对不上时，宁可这场没有市场价（界面上就是空的，用户照旧手填），也不能
+    凭「日期相近 + 名字像」硬配——配错的后果是把 A 场的赔率填进 B 场，
+    而这个错误在界面上完全看不出来。
+    """
+    logger = logging.getLogger("valuebet.updater")
+    if not odds_api.ODDS_API_KEY:
+        return {"status": "skipped", "detail": "ODDS_API_KEY 未配置", "updated": 0}
+
+    today = date_cls.today()
+    horizon = today + timedelta(days=_ODDS_LOOKAHEAD_DAYS)
+    updated = 0
+    unmatched = 0
+    quota = {}
+    failures = []
+
+    for comp in get_active_competitions(db):
+        if comp.code not in odds_api.SPORT_KEYS:
+            continue
+        # 先看库里这个赛事近期有没有比赛，没有就不花这次请求
+        soon = (db.query(models.Match)
+                  .filter(models.Match.competition_id == comp.id,
+                          models.Match.status == "upcoming",
+                          models.Match.date >= today, models.Match.date <= horizon)
+                  .all())
+        if not soon:
+            continue
+        # 队名对必须完全一致，日期允许差一天：The Odds API 的 commence_time
+        # 是 UTC，而 openfootball 的赛程日期是当地比赛日，晚场会跨 UTC 零点
+        # （美洲赛事尤其常见）。放宽到 ±1 天不会配错——同样两支球队两天内
+        # 踢两场是不可能的，所以「队名对 + 相差一天内」是唯一的。
+        by_key = {}
+        for m in soon:
+            by_key.setdefault((m.team1, m.team2), []).append(m)
+
+        try:
+            rows, quota = odds_api.fetch_h2h_odds(comp.code)
+        except Exception as e:
+            failures.append("%s: %s" % (comp.code, str(e)[:120]))
+            logger.warning("[%s] 赔率抓取失败: %s", comp.code, str(e)[:200])
+            continue
+
+        existing = {mo.match_id: mo for mo in
+                    db.query(models.MarketOdds)
+                      .filter(models.MarketOdds.match_id.in_([m.id for m in soon])).all()}
+
+        for r in rows:
+            t1, t2 = normalize_team_name(r["team1"]), normalize_team_name(r["team2"])
+            try:
+                rd = date_cls.fromisoformat(r["date"])
+            except (TypeError, ValueError):
+                unmatched += 1
+                continue
+            m = next((x for x in by_key.get((t1, t2), [])
+                      if abs((x.date - rd).days) <= 1), None)
+            if m is None:
+                unmatched += 1
+                continue
+            row = existing.get(m.id)
+            if row is None:
+                row = models.MarketOdds(match_id=m.id)
+                db.add(row)
+                existing[m.id] = row
+            row.n_books = r["n_books"]
+            row.best_home, row.best_draw, row.best_away = r["best_home"], r["best_draw"], r["best_away"]
+            row.avg_home, row.avg_draw, row.avg_away = r["avg_home"], r["avg_draw"], r["avg_away"]
+            row.fetched_at = datetime.utcnow()
+            updated += 1
+
+    db.commit()
+    logger.info("[market_odds] 更新 %d 场，%d 场对不上号；配额剩余 %s",
+                updated, unmatched, quota.get("remaining"))
+    return {"status": "partial" if failures else "ok", "updated": updated,
+            "unmatched": unmatched, "quota_remaining": quota.get("remaining"),
+            "detail": "; ".join(failures) if failures else None}
+
+
 def run_full_update(db: Session) -> dict:
     """
     The single entry point the scheduler (and the manual button) calls.
@@ -1215,6 +1305,19 @@ def run_full_update(db: Session) -> dict:
             update_bayesian_states_for_newly_played_matches(db)
             log.predictions_updated = update_predictions(db)
             log.bets_resolved = resolve_bets(db) + resolve_parlay_bets(db)
+
+            # 市场报价放在最后，而且单独 try：它是锦上添花（省下手工敲赔率），
+            # 配额用尽或者接口抖动都不该让整轮更新变成失败。前面那些才是
+            # 系统的立身之本。
+            try:
+                mo = refresh_market_odds(db)
+                if mo.get("detail"):
+                    failed_comps.append("市场赔率: %s" % mo["detail"][:120])
+            except Exception as oe:
+                db.rollback()
+                failed_comps.append("市场赔率: %s" % str(oe)[:120])
+                logging.getLogger("valuebet.updater").warning(
+                    "市场赔率整体失败: %s", str(oe)[:200])
             if failed_comps:
                 # 部分失败照样算这次更新跑完了，但把失败的赛事记下来，
                 # 否则数据悄悄少了一个赛事却看不出来

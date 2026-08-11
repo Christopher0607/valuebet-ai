@@ -145,6 +145,36 @@ class Odds(Base):
     recorded_at = Column(DateTime, default=datetime.utcnow)
 
 
+class MarketOdds(Base):
+    """The Odds API 自动抓回来的**市场公开报价**，一场比赛一行，每次抓覆盖。
+
+    为什么不塞进 Odds 表：那张表是"你自己看到/填的报价"，带 owner_id、按
+    账号隔离，而且是 EV 计算和下注记录的依据。市场报价是公开数据，没有
+    归属，混进去会有两个具体的坏处：
+      1. _owned() 在云端模式下会把 owner_id 为空的行判成不可见，自动抓
+         回来的赔率反而永远显示不出来；
+      2. 「系统抓的价」和「我在 BK8 实际能拿到的价」是两回事，混在一条
+         时间线里，下注记录里的 odds_used 就说不清到底是哪个。
+    所以分开存，前端也分开展示：市场价只用来预填和比价，真正下注用的
+    还是用户自己确认的那个价。
+
+    同时存最优价和平均价：项目走查出来的唯一正结果（热门-冷门偏差）盈亏
+    完全取决于价格执行——成交价 = 平均价 + f×(最优价-平均价)，f=0 时
+    ROI -3.54%，f=0.8 才盈亏平衡。只留一个价，这个差额就没法衡量了。
+    """
+    __tablename__ = "market_odds"
+    id = Column(Integer, primary_key=True)
+    match_id = Column(Integer, ForeignKey("matches.id"), unique=True)
+    n_books = Column(Integer)                                       # 参与比价的博彩公司家数
+    best_home = Column(Float)
+    best_draw = Column(Float, nullable=True)
+    best_away = Column(Float)
+    avg_home = Column(Float)
+    avg_draw = Column(Float, nullable=True)
+    avg_away = Column(Float)
+    fetched_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Bet(Base):
     """Virtual bets — for mathematically testing the model, not real money."""
     __tablename__ = "bets"
