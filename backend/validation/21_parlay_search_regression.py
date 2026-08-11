@@ -18,6 +18,8 @@ import json
 import time
 import random
 import itertools
+import gc
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
@@ -201,6 +203,69 @@ def main():
     t = time.time(); legacy_suggest_parlays(ms, 2, 8, 0.25, 0.05); a = time.time() - t
     t = time.time(); suggest_parlays(ms, 2, 8, 0.25, 0.05); b = time.time() - t
     print(f"  旧 {a:.2f}s → 新 {b:.2f}s   提速 {a/b:.1f}×")
+
+    memory_check()
+
+
+def memory_check():
+    """内存才是线上真正炸掉的那一项 —— 用户报的 "Failed to fetch" 就是它。
+
+    现场：串关页选 115 场，点「生成推荐组合」，浏览器报 Failed to fetch，
+    F12 里失败的那条是 **parlay/suggest**（不是存赔率那批请求）。
+
+    旧实现对**每一个**正EV组合都当场构造完整嵌套 dict（含 k 个腿的子 dict
+    列表），十几万个一起留在内存里等排序。实测进程 RSS 峰值 627 MB，而
+    Render 免费档上限 512 MB —— worker 被 OOM 杀掉，连接直接断开，浏览器
+    看到的就是 fetch 失败（不是某个 HTTP 错误码，所以界面上只有一句
+    Failed to fetch，什么线索都没有）。
+
+    注意组合数只取决于**候选池大小(≤20)和最大腿数(≤8)**，跟用户选了多少场
+    没关系——选 60 场和选 115 场评估的都是 263,929 个组合。所以这不是"选太
+    多"导致的，是这个搜索本身在免费档内存里放不下。
+
+    采样必须用后台线程边跑边采：只在函数返回前后各采一次的话，峰值早就被
+    释放了，量出来是 89 MB，完全看不出问题（第一次就是这么量错的）。
+    """
+    def rss_mb():
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS"):
+                    return int(line.split()[1]) / 1024
+        return 0.0
+
+    if not os.path.exists("/proc/self/status"):
+        print("\n（非 Linux，跳过内存测量）")
+        return
+
+    ms = make_matches(115, 7, 1.08)
+    RENDER_FREE_MB = 512
+    print(f"\n内存（最坏情况：115 场输入、2-8 腿；Render 免费档上限 {RENDER_FREE_MB} MB）：")
+    results = {}
+    for label, fn in (("旧", legacy_suggest_parlays), ("新", suggest_parlays)):
+        gc.collect()
+        peak = [rss_mb()]
+        stop = [False]
+
+        def sample():
+            while not stop[0]:
+                peak[0] = max(peak[0], rss_mb())
+                time.sleep(0.01)
+
+        th = threading.Thread(target=sample)
+        th.start()
+        r = fn(ms, 2, 8, 0.25, 0.05)
+        stop[0] = True
+        th.join()
+        results[label] = peak[0]
+        n = r.get("n_combinations_evaluated")
+        del r
+        gc.collect()
+        flag = "❌ 超上限" if peak[0] > RENDER_FREE_MB else "✅ 在上限内"
+        print(f"  {label}: 进程 RSS 峰值 {peak[0]:6.0f} MB   评估 {n:,} 组合   {flag}")
+
+    assert results["新"] < RENDER_FREE_MB, ("新实现仍然超出免费档内存上限", results)
+    print(f"  → 峰值降低 {results['旧'] - results['新']:.0f} MB "
+          f"（{results['旧'] / results['新']:.1f}× ），这才是 Failed to fetch 的根因修复")
 
 
 if __name__ == "__main__":
