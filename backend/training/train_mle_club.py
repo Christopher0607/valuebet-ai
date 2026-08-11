@@ -88,6 +88,29 @@ TXT_LEAGUES = {
     "en.5": ("英格兰全国联赛",
              "https://raw.githubusercontent.com/openfootball/england/master/{season}/5-nationalleague.txt",
              ["2019-20", "2020-21", "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]),
+    # 德乙/法乙。加它们不是为了「多几个联赛」，是为了补两个具体的洞：
+    # 2026-27 德甲升班马 SV 07 Elversberg 和法甲升班马 Le Mans，在只训练
+    # 一级联赛的参数表里**一场数据都没有**，预测直接退回 (0,0) 兜底，
+    # 前端标 data_backing=none。实测这两支球队牵连 68 场 2026-27 赛程。
+    #
+    # 桥（升降级共享球队）实测数出来的，不是假设：
+    #   德乙 ∩ 德甲 = 18 支（科隆/沙尔克/纽伦堡/杜塞尔多夫/比勒费尔德…）
+    #   法乙 ∩ 法甲 = 24 支（欧塞尔/圣埃蒂安/亚眠/昂热/克莱蒙…）
+    # 比法甲当初靠欧冠那 5 支桥结实得多，跨度也大（不是只锚顶端）。
+    #
+    # 赛季范围是逐个 HTTP 验过的真实覆盖，不是照着一级联赛抄的：
+    #   德乙 2-bundesliga2.txt 从 2012-13 才有（2010-11/2011-12 是 404）
+    #   法乙 {season}_fr2.txt 从 2014-15 才有
+    # 目录结构两边不一样（德国按赛季目录，法国是国家目录+文件名前缀），
+    # 见 updater.py 里 fr.1 那条注释踩过的坑。
+    "de.2": ("德乙",
+             "https://raw.githubusercontent.com/openfootball/deutschland/master/{season}/2-bundesliga2.txt",
+             ["2012-13", "2013-14", "2014-15", "2015-16", "2016-17", "2017-18", "2018-19",
+              "2019-20", "2020-21", "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]),
+    "fr.2": ("法乙",
+             "https://raw.githubusercontent.com/openfootball/france/master/france/{season}_fr2.txt",
+             ["2014-15", "2015-16", "2016-17", "2017-18", "2018-19", "2019-20",
+              "2020-21", "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]),
 }
 
 OUT_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "historical_results_club.csv")
@@ -136,7 +159,7 @@ def collect_domestic() -> list:
 
 
 def collect_txt_leagues() -> list:
-    """读只有 .txt 源的联赛（目前只有英格兰全国联赛）。"""
+    """读只有 .txt 源的联赛（全国联赛/德乙/法乙）。"""
     rows = []
     for code, (label, template, seasons) in TXT_LEAGUES.items():
         got = 0

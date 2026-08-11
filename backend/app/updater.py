@@ -16,7 +16,9 @@ how this is handled without hardcoding a season that will go stale.
 import requests
 import threading
 import logging
-from datetime import datetime, date as date_cls
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from types import SimpleNamespace
+from datetime import datetime, date as date_cls, timedelta
 from sqlalchemy.orm import Session
 
 from . import models
@@ -27,6 +29,14 @@ from . import api_football, odds_api
 # API-Football 拿（见 api_football.py 顶部注释：免费档只开放 2022-2024），
 # 未来赛程从 The Odds API 拿（不受那个赛季限制，但也不含任何赔率数据）。
 _ODDS_TXT_COMPETITIONS = {"mls", "efl_cup"}
+
+# 混合来源的赛事：**历史赛果**照旧走 openfootball（.json 镜像有完整历史，
+# 也是 club 参数表的训练数据来源），但**未来赛程**走 The Odds API。
+# 原因很具体：openfootball 上游到 2026-08 还没发布这三个联赛的 2026-27
+# 赛季文件（三个仓库整棵目录树 clone 下来搜过，2026-27 只有英超/英冠/
+# 西甲/法甲/荷甲/葡超六个文件），而 The Odds API 已经有下一轮的赛程。
+# 等 openfootball 补上之后这里可以撤掉，届时 .txt 源已经挂好会自动接管。
+_ODDS_FIXTURE_COMPETITIONS = {"leagueone", "leaguetwo", "segunda"}
 
 
 def _has_af_historical_data(db: Session, comp: "models.Competition") -> bool:
@@ -173,6 +183,31 @@ _CLUB_NAME_ALIASES = {
     #   我们不训练法乙/德乙，所以它们在参数表里本来就该缺席，会走
     #   FALLBACK 兜底。前端的 data_backing 会把这种比赛标成 "none"，
     #   这是正确行为，不是要修的 bug。
+    # ── The Odds API 的队名 → 参数表规范名 ──────────────────────
+    # 英甲/英乙/西乙的未来赛程走 The Odds API（openfootball 上游还没发
+    # 2026-27），而它用的是自己一套队名，跟 openfootball 的历史数据对不上。
+    # 对不上的后果是静默的：比赛照常显示、概率照常算，只是那支队退回
+    # (0,0) 兜底，产出"看起来正常实则无意义"的预测。
+    # 把三个联赛全部 70 支球队逐个跑过 normalize_team_name 再查参数表，
+    # 英乙 24/24 全对得上，英甲差 2 支，西乙差 10 支。括号里是该规范名在
+    # 训练数据里的真实场次——每条都核对过才写，不是看名字像就并：
+    "Luton": "Luton Town",                 # 394 场
+    "Wimbledon": "AFC Wimbledon",          # 249 场
+    "Almería": "UD Almería",               # 381 场
+    "Celta Vigo": "RC Celta de Vigo",      # 417 场
+    "Córdoba": "Córdoba CF",               # 221 场
+    "Las Palmas": "UD Las Palmas",         # 327 场
+    "Leganés": "CD Leganés",               # 285 场
+    "Mallorca": "RCD Mallorca",            # 395 场
+    "Oviedo": "Real Oviedo",               # 331 场
+    "Tenerife": "CD Tenerife",             # 293 场
+    "Andorra CF": "FC Andorra",            # 12 场（新队，样本本来就少）
+    "Sabadell": "CE Sabadell",             # 42 场（注意：源写 "Sabadell FC"，
+                                           # 尾部 FC 会先被规则削掉，所以
+                                           # 这里的 key 是削完的 "Sabadell"）
+    # 差点写错的一条，记下来防止以后再犯：用子串找候选时 "Las Palmas" 会
+    # 先命中 "Hellas Verona"（341 场，"las" 是 "Hellas" 的子串），那是意甲
+    # 球队，完全无关。候选列表只能当线索，必须人工确认再写。
     # MLS —— 上面那条"去掉尾部 FC/AFC"的规则是照欧洲联赛的习惯写的，那边
     # "Arsenal FC" 的 FC 只是通用后缀，去掉不影响识别。但"Los Angeles FC"
     # （官方队名就叫 LAFC）不一样，FC 是队名本身的一部分，去掉之后变成
@@ -534,11 +569,28 @@ def _is_bracket_placeholder(name: str) -> bool:
 
 
 def fetch_upcoming(comp: models.Competition) -> list:
+    """「没有比分」不等于「还没踢」——日期已经过去的那一批必须剔掉。
+
+    上游 openfootball 的赛季文件是**整季赛程先发布、比分后面逐周回填**，
+    而回填经常烂尾：football.json 镜像的 2025-26 英甲文件里 552 场只填了
+    356 场比分，剩下 196 场是 2025-09〜2026-05 的真实比赛，只是没人补数据。
+    只按「有没有比分」分类的话，这 196 场会全部被当成"即将开赛"存进库，
+    日期还停在去年。实测四个联赛都中招（2026-08-09，今天之前的日期）：
+
+        英甲 196 场 · 英乙 288 场 · 西乙 331 场 · 全国联赛 268 场
+
+    前端有 `m.date >= today` 兜底，所以界面上没有出现假赛程；但脏数据照样
+    进了库，而且会让"上游发布新赛季了没有"这个判断永远为真——本来想做的
+    「openfootball 一旦发布 2026-27 就自动接管 The Odds API」会因此永不触发。
+    所以修在源头：过去的日期一律不算赛程。
+    """
+    today = date_cls.today().isoformat()
     out = []
     for m in _fetch_matches(comp):
         has_score = _extract_final_score(m.get("score")) is not None
         placeholder = _is_bracket_placeholder(m.get("team1", "")) or _is_bracket_placeholder(m.get("team2", ""))
-        if not has_score and not placeholder:
+        # 用字符串比 ISO 日期是安全的：YYYY-MM-DD 的字典序等于时间序
+        if not has_score and not placeholder and m.get("date", "") >= today:
             out.append(m)
     return out
 
@@ -997,6 +1049,176 @@ def resolve_bets(db: Session) -> int:
 _update_lock = threading.Lock()
 
 
+def _fetch_competition_payload(plan) -> tuple:
+    """抓一个赛事的 (已赛, 赛程)。**只做网络 I/O，绝对不碰数据库。**
+
+    单独抽出来是为了能放进线程池。原来这段逻辑内联在 run_full_update 的
+    循环里，跟 upsert_matches 混在一起，12 个赛事只能挨个跑：每个 1.5-4 秒
+    （大头是 _resolve_data_source 的赛季探测 HEAD 请求），合计 30-40 秒。
+    这些请求彼此没有依赖，纯粹在排队等网络。
+
+    为什么参数是 plan 不是 Competition：ORM 对象绑在 Session 上，跨线程读
+    属性可能触发 lazy load，而 Session 不是线程安全的。调用方在主线程里把
+    code / data_source 拷成普通对象再传进来；需要查库才能知道的
+    skip_af_history 也一样，在主线程先算好。
+
+    返回 (played, upcoming, sub_failures)。played 为 None 表示这个赛事这一轮
+    整个失败了，调用方跳过入库；sub_failures 非空表示部分失败，要在界面上
+    标出来但不影响入库。
+    """
+    sub_fail = []
+    if plan.code in _ODDS_TXT_COMPETITIONS:
+        # 三路数据各自独立成败，不互相拖累：
+        #   历史赛果(API-Football) —— 2022-2024，不变量，
+        #     第一次抓完就一直在库里，后续失败无损失
+        #   当前赛季赛果(The Odds API /scores) —— 决定注单
+        #     能不能结算，最不能丢的一路
+        #   未来赛程(The Odds API /events) —— 决定有没有得预测
+        #
+        # 早先的写法是历史那路直接抛出去，结果 API-Football 一旦挂了
+        # （额度用尽、服务抖动），当前赛季的赛果也跟着抓不成，用户的注单
+        # 就一直挂着不结算——而那批历史数据明明早就在库里了，重抓与否
+        # 根本不影响什么。
+        #
+        # 「不影响什么」不该只停在嘴上——已经在库里就真的不再重抓，见
+        # _has_af_historical_data。省下来的不只是几个请求：这三个赛季的
+        # 数据不变，之前是每轮都重新问一遍已经问过的问题，白白跟当天真正
+        # 要紧的请求（当前赛季赛果、下一轮赛程）抢免费档配额。
+        steps = [("当前赛季赛果", lambda: odds_api.fetch_recent_scores(plan.code))]
+        if not plan.skip_af_history:
+            steps.insert(0, ("历史赛果", lambda: api_football.fetch_training_matches(plan.code)))
+        played = []
+        for label, fn in steps:
+            try:
+                played += fn()
+            except Exception as se:
+                sub_fail.append("%s: %s" % (label, str(se)[:120]))
+                logging.getLogger("valuebet.updater").warning(
+                    "[%s] %s 抓取失败: %s", plan.code, label, str(se)[:200])
+        # 赛程这一路仍然直接抛：它失败意味着这个赛事这一轮完全没有可预测
+        # 的比赛，属于真的该标红的情况
+        upcoming = odds_api.fetch_upcoming_events(plan.code)
+        return played, upcoming, sub_fail
+
+    if plan.code in _ODDS_FIXTURE_COMPETITIONS:
+        # 历史走 openfootball，赛程**优先**也走 openfootball，只有它拿不出
+        # 赛程时才退到 The Odds API。
+        #
+        # 顺序是这样定的：openfootball 给的是整季赛程（含轮次），
+        # The Odds API 只给博彩公司已开盘的近期几场，而且吃额度。所以一旦
+        # 上游发布 2026-27，就该让它接管——写成「非空则用」之后这个接管是
+        # 自动的，不用回来改代码。
+        #
+        # 这个自动接管能成立的前提是 fetch_upcoming 已经把「过去日期的
+        # 无比分比赛」剔干净了（见那个函数的注释）：不剔的话旧赛季烂尾的
+        # 196/288/331 场会让它恒为非空，永远轮不到 The Odds API。
+        played = fetch_results(plan)
+        upcoming = fetch_upcoming(plan)
+        if not upcoming:
+            try:
+                upcoming = odds_api.fetch_upcoming_events(plan.code)
+            except Exception as se:
+                # 赛程拿不到（没配 key、额度用尽、该联赛暂时没开盘）不该把
+                # 已经抓到的历史赛果一起丢掉——那批是训练和回测的基础。
+                upcoming = []
+                sub_fail.append("赛程: %s" % str(se)[:120])
+                logging.getLogger("valuebet.updater").warning(
+                    "[%s] Odds API 赛程抓取失败: %s", plan.code, str(se)[:200])
+        return played, upcoming, sub_fail
+
+    return fetch_results(plan), fetch_upcoming(plan), sub_fail
+
+
+# 只给「未来这么多天内开球」的比赛抓赔率。The Odds API 免费档一个月 500 次
+# 请求，抓赔率是唯一按 sport×region×market 计费的一路，赛程和比分都不计费。
+# 六个有 sport key 的赛事 × 每天 2 次 × 30 天 = 360 次，已经吃掉大半配额，
+# 所以不能见一个赛事就抓——没有近期比赛的赛事直接跳过。
+_ODDS_LOOKAHEAD_DAYS = 5
+
+
+def refresh_market_odds(db: Session) -> dict:
+    """把 The Odds API 的 1X2 报价抓回来，存进 market_odds 表。
+
+    只处理「有 sport key」且「未来 _ODDS_LOOKAHEAD_DAYS 天内真的有比赛」的
+    赛事——这是省配额的关键，见 _ODDS_LOOKAHEAD_DAYS 上面的算术。
+
+    对不上号的比赛静默跳过而不是猜：The Odds API 的队名跟库里的规范队名
+    对不上时，宁可这场没有市场价（界面上就是空的，用户照旧手填），也不能
+    凭「日期相近 + 名字像」硬配——配错的后果是把 A 场的赔率填进 B 场，
+    而这个错误在界面上完全看不出来。
+    """
+    logger = logging.getLogger("valuebet.updater")
+    if not odds_api.ODDS_API_KEY:
+        return {"status": "skipped", "detail": "ODDS_API_KEY 未配置", "updated": 0}
+
+    today = date_cls.today()
+    horizon = today + timedelta(days=_ODDS_LOOKAHEAD_DAYS)
+    updated = 0
+    unmatched = 0
+    quota = {}
+    failures = []
+
+    for comp in get_active_competitions(db):
+        if comp.code not in odds_api.SPORT_KEYS:
+            continue
+        # 先看库里这个赛事近期有没有比赛，没有就不花这次请求
+        soon = (db.query(models.Match)
+                  .filter(models.Match.competition_id == comp.id,
+                          models.Match.status == "upcoming",
+                          models.Match.date >= today, models.Match.date <= horizon)
+                  .all())
+        if not soon:
+            continue
+        # 队名对必须完全一致，日期允许差一天：The Odds API 的 commence_time
+        # 是 UTC，而 openfootball 的赛程日期是当地比赛日，晚场会跨 UTC 零点
+        # （美洲赛事尤其常见）。放宽到 ±1 天不会配错——同样两支球队两天内
+        # 踢两场是不可能的，所以「队名对 + 相差一天内」是唯一的。
+        by_key = {}
+        for m in soon:
+            by_key.setdefault((m.team1, m.team2), []).append(m)
+
+        try:
+            rows, quota = odds_api.fetch_h2h_odds(comp.code)
+        except Exception as e:
+            failures.append("%s: %s" % (comp.code, str(e)[:120]))
+            logger.warning("[%s] 赔率抓取失败: %s", comp.code, str(e)[:200])
+            continue
+
+        existing = {mo.match_id: mo for mo in
+                    db.query(models.MarketOdds)
+                      .filter(models.MarketOdds.match_id.in_([m.id for m in soon])).all()}
+
+        for r in rows:
+            t1, t2 = normalize_team_name(r["team1"]), normalize_team_name(r["team2"])
+            try:
+                rd = date_cls.fromisoformat(r["date"])
+            except (TypeError, ValueError):
+                unmatched += 1
+                continue
+            m = next((x for x in by_key.get((t1, t2), [])
+                      if abs((x.date - rd).days) <= 1), None)
+            if m is None:
+                unmatched += 1
+                continue
+            row = existing.get(m.id)
+            if row is None:
+                row = models.MarketOdds(match_id=m.id)
+                db.add(row)
+                existing[m.id] = row
+            row.n_books = r["n_books"]
+            row.best_home, row.best_draw, row.best_away = r["best_home"], r["best_draw"], r["best_away"]
+            row.avg_home, row.avg_draw, row.avg_away = r["avg_home"], r["avg_draw"], r["avg_away"]
+            row.fetched_at = datetime.utcnow()
+            updated += 1
+
+    db.commit()
+    logger.info("[market_odds] 更新 %d 场，%d 场对不上号；配额剩余 %s",
+                updated, unmatched, quota.get("remaining"))
+    return {"status": "partial" if failures else "ok", "updated": updated,
+            "unmatched": unmatched, "quota_remaining": quota.get("remaining"),
+            "detail": "; ".join(failures) if failures else None}
+
+
 def run_full_update(db: Session) -> dict:
     """
     The single entry point the scheduler (and the manual button) calls.
@@ -1032,49 +1254,48 @@ def run_full_update(db: Session) -> dict:
             if n_deduped:
                 logging.getLogger("valuebet.updater").info(
                     "[dedupe] 合并了 %d 条队名不一致导致的重复比赛", n_deduped)
-            for comp in get_active_competitions(db):
+            # 抓取阶段并行、入库阶段串行 —— 分开的理由见 _fetch_competition_payload。
+            #
+            # 改之前是 12 个赛事挨个抓，每个 1.5-4 秒（赛季探测的 HEAD 请求
+            # 占大头，见 _resolve_data_source），加起来 30-40 秒，用户点一次
+            # 「立即更新」要干等这么久。这些请求之间没有任何依赖，纯粹是
+            # 排队等网络往返。
+            comps = list(get_active_competitions(db))
+            # comp 是绑定在 session 上的 ORM 对象，跨线程访问会触发 lazy load，
+            # 而 Session 不是线程安全的。所以在主线程里把要用的字段拷成普通
+            # 对象再交给线程池——抓取函数只读 code / data_source 两个字段。
+            # _has_af_historical_data 要查库，也必须留在主线程先算好。
+            plans = [
+                SimpleNamespace(
+                    code=c.code, data_source=c.data_source,
+                    skip_af_history=(c.code in _ODDS_TXT_COMPETITIONS
+                                     and _has_af_historical_data(db, c)),
+                )
+                for c in comps
+            ]
+            payloads = {}
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futs = {pool.submit(_fetch_competition_payload, p): p.code for p in plans}
+                for fut in as_completed(futs):
+                    code = futs[fut]
+                    try:
+                        payloads[code] = fut.result()
+                    except Exception as ce:
+                        # 抓取阶段抛出来的，跟原来单赛事 try 的语义一样：
+                        # 只记这一个赛事失败，其余照常
+                        payloads[code] = (None, None, [str(ce)[:120]])
+
+            for comp in comps:
                 # 每个赛事单独 try —— 一个赛事的数据源挂了（比如某季文件还没
                 # 发布），不该连累其他赛事。实测踩过：欧冠 404 导致整个事务回滚，
                 # 另外5个赛事的预测一条都没生成。
                 try:
-                    if comp.code in _ODDS_TXT_COMPETITIONS:
-                        # 三路数据各自独立成败，不互相拖累：
-                        #   历史赛果(API-Football) —— 2022-2024，不变量，
-                        #     第一次抓完就一直在库里，后续失败无损失
-                        #   当前赛季赛果(The Odds API /scores) —— 决定注单
-                        #     能不能结算，最不能丢的一路
-                        #   未来赛程(The Odds API /events) —— 决定有没有得预测
-                        #
-                        # 早先的写法是历史那路直接抛出去，结果 API-Football
-                        # 一旦挂了（额度用尽、服务抖动），当前赛季的赛果也跟着
-                        # 抓不成，用户的注单就一直挂着不结算——而那批历史数据
-                        # 明明早就在库里了，重抓与否根本不影响什么。
-                        #
-                        # 「不影响什么」不该只停在嘴上——已经在库里就真的不再
-                        # 重抓，见 _has_af_historical_data。省下来的不只是几个
-                        # 请求：这三个赛季的数据不变，之前是每轮都重新问一遍
-                        # 已经问过的问题，白白跟当天真正要紧的请求（当前赛季
-                        # 赛果、下一轮赛程）抢免费档配额。
-                        steps = [("当前赛季赛果", lambda: odds_api.fetch_recent_scores(comp.code))]
-                        if not _has_af_historical_data(db, comp):
-                            steps.insert(0, ("历史赛果", lambda: api_football.fetch_training_matches(comp.code)))
-                        played, sub_fail = [], []
-                        for label, fn in steps:
-                            try:
-                                played += fn()
-                            except Exception as se:
-                                sub_fail.append("%s: %s" % (label, str(se)[:120]))
-                                logging.getLogger("valuebet.updater").warning(
-                                    "[%s] %s 抓取失败: %s", comp.code, label, str(se)[:200])
-                        # 赛程这一路仍然直接抛：它失败意味着这个赛事这一轮
-                        # 完全没有可预测的比赛，属于真的该标红的情况
-                        upcoming = odds_api.fetch_upcoming_events(comp.code)
-                        if sub_fail:
-                            # 不静默——半成功也要在界面的状态条上看得见
-                            failed_comps.append("%s（部分）: %s" % (comp.code, "; ".join(sub_fail)))
-                    else:
-                        played = fetch_results(comp)
-                        upcoming = fetch_upcoming(comp)
+                    played, upcoming, sub_fail = payloads.get(comp.code, (None, None, ["没有抓取结果"]))
+                    if sub_fail:
+                        # 不静默——半成功也要在界面的状态条上看得见
+                        failed_comps.append("%s（部分）: %s" % (comp.code, "; ".join(sub_fail)))
+                    if played is None:
+                        continue
                     total_matches_updated += upsert_matches(db, comp, played, upcoming)
                 except Exception as ce:
                     db.rollback()
@@ -1084,6 +1305,19 @@ def run_full_update(db: Session) -> dict:
             update_bayesian_states_for_newly_played_matches(db)
             log.predictions_updated = update_predictions(db)
             log.bets_resolved = resolve_bets(db) + resolve_parlay_bets(db)
+
+            # 市场报价放在最后，而且单独 try：它是锦上添花（省下手工敲赔率），
+            # 配额用尽或者接口抖动都不该让整轮更新变成失败。前面那些才是
+            # 系统的立身之本。
+            try:
+                mo = refresh_market_odds(db)
+                if mo.get("detail"):
+                    failed_comps.append("市场赔率: %s" % mo["detail"][:120])
+            except Exception as oe:
+                db.rollback()
+                failed_comps.append("市场赔率: %s" % str(oe)[:120])
+                logging.getLogger("valuebet.updater").warning(
+                    "市场赔率整体失败: %s", str(oe)[:200])
             if failed_comps:
                 # 部分失败照样算这次更新跑完了，但把失败的赛事记下来，
                 # 否则数据悄悄少了一个赛事却看不出来
