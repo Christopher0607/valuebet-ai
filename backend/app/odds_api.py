@@ -169,7 +169,20 @@ def _quota_from(resp) -> dict:
     return {"remaining": _int("x-requests-remaining"), "used": _int("x-requests-used")}
 
 
-def fetch_h2h_odds(league_code: str, regions: str = "eu") -> tuple:
+# 抓哪些地区的博彩公司。The Odds API 按 **地区 × 盘口** 计费：regions="eu"
+# 一次请求 1 个配额，regions="uk,eu" 就是 2 个。免费档一个月 500 次，所以
+# 默认只用 eu，要更多博彩公司自己在环境变量里加。
+#
+#   eu  —— Pinnacle、1xBet、Unibet、Betclic 等（Pinnacle 抽水最低，
+#          是判断「这个价到底好不好」最有参考价值的一家）
+#   uk  —— bet365、William Hill、Betfair、Ladbrokes 等
+#   au / us —— 澳洲 / 美国的本地博彩公司
+#
+# 想要 bet365 就设 ODDS_API_REGIONS=uk,eu（配额翻倍，自己权衡）。
+ODDS_API_REGIONS = os.environ.get("ODDS_API_REGIONS", "eu").strip() or "eu"
+
+
+def fetch_h2h_odds(league_code: str, regions: str = None) -> tuple:
     """抓一个联赛的 1X2 盘口，返回 (记录列表, 配额信息)。
 
     每条记录同时给**最优价**和**平均价**，两个都要，理由是项目自己走查出来
@@ -192,7 +205,7 @@ def fetch_h2h_odds(league_code: str, regions: str = "eu") -> tuple:
 
     r = requests.get(
         f"{_BASE}/sports/{SPORT_KEYS[league_code]}/odds/",
-        params={"apiKey": ODDS_API_KEY, "regions": regions,
+        params={"apiKey": ODDS_API_KEY, "regions": regions or ODDS_API_REGIONS,
                 "markets": "h2h", "oddsFormat": "decimal"},
         timeout=25,
     )

@@ -178,6 +178,73 @@ def test_cross_midnight(db):
           f"（{m.team1} vs {m.team2}）")
 
 
+def test_window_only_gates_the_request(db):
+    """窗口只决定「要不要发请求」，不该限制留下哪些结果。
+
+    第一版把 _ODDS_LOOKAHEAD_DAYS 同时当成了匹配池的范围，于是博彩公司已经
+    开盘、接口已经返回、配额也已经花掉的那些 6-14 天后的比赛，全部被当成
+    「对不上号」丢掉。实测代价：2,304 场未来比赛里只有 21 场（0.9%）拿得到
+    赔率——不是联赛没覆盖，是自己把已经买到手的数据扔了。
+    """
+    from app import models, updater
+    db.query(models.MarketOdds).delete()
+    db.commit()
+    today = date.today()
+    far = today + timedelta(days=updater._ODDS_LOOKAHEAD_DAYS + 25)  # 远在窗口之外
+
+    comp = None
+    for c in db.query(models.Competition).all():
+        if c.code not in odds_api.SPORT_KEYS:
+            continue
+        has_near = (db.query(models.Match)
+                      .filter(models.Match.competition_id == c.id,
+                              models.Match.status == "upcoming",
+                              models.Match.date >= today,
+                              models.Match.date <= today + timedelta(days=updater._ODDS_LOOKAHEAD_DAYS))
+                      .first())
+        if has_near:
+            comp = c
+            break
+    if comp is None:
+        print("⚠️ 没有「窗口内有比赛」的赛事，跳过窗口校验")
+        return
+
+    far_matches = (db.query(models.Match)
+                     .filter(models.Match.competition_id == comp.id,
+                             models.Match.status == "upcoming",
+                             models.Match.date > today + timedelta(days=updater._ODDS_LOOKAHEAD_DAYS),
+                             models.Match.date <= far)
+                     .limit(5).all())
+    if not far_matches:
+        print(f"⚠️ {comp.code} 窗口外没有比赛，跳过窗口校验")
+        return
+
+    def fake(code, regions=None):
+        if code != comp.code:
+            return [], {"remaining": 400, "used": 100}
+        return ([{"date": m.date.isoformat(), "time": "14:00",
+                  "team1": m.team1, "team2": m.team2, "n_books": 9,
+                  "best_home": 2.55, "best_draw": 3.42, "best_away": 3.10,
+                  "avg_home": 2.41, "avg_draw": 3.30, "avg_away": 2.95}
+                 for m in far_matches], {"remaining": 400, "used": 100})
+
+    real = odds_api.fetch_h2h_odds
+    odds_api.fetch_h2h_odds = fake
+    try:
+        res = updater.refresh_market_odds(db)
+    finally:
+        odds_api.fetch_h2h_odds = real
+
+    saved = {mo.match_id for mo in db.query(models.MarketOdds).all()}
+    missing = [m for m in far_matches if m.id not in saved]
+    assert not missing, ("窗口外的比赛被丢掉了", [(m.date.isoformat(), m.team1) for m in missing])
+    assert res["unmatched"] == 0, res
+    days_out = (max(m.date for m in far_matches) - today).days
+    print(f"✅ [{comp.code}] 窗口是 +{updater._ODDS_LOOKAHEAD_DAYS} 天，"
+          f"但窗口外最远 +{days_out} 天的 {len(far_matches)} 场全部保留，"
+          f"没有被当成对不上号丢掉")
+
+
 def main():
     test_parse()
     test_empty_when_no_book()
@@ -187,6 +254,7 @@ def main():
         test_ev_formula_unchanged(db)
         test_no_fuzzy_match(db)
         test_cross_midnight(db)
+        test_window_only_gates_the_request(db)
     finally:
         db.close()
     print("\n全部通过。")

@@ -261,6 +261,19 @@ Netlify 部署完全等价——两边可以**同时留着**，`FRONTEND_ORIGINS
 | 变量 | 值 | 加在哪 |
 |---|---|---|
 | `ODDS_API_KEY` | The Odds API 的 key | 后端（Render / Railway）|
+| `ODDS_API_REGIONS` | 可选，默认 `eu`。想要 bet365 就填 `uk,eu` | 同上 |
+
+**`ODDS_API_REGIONS` 决定抓哪些博彩公司**，也直接决定配额消耗——The Odds API
+按「地区 × 盘口」计费，`eu` 是 1 个配额，`uk,eu` 就是 2 个（翻倍）。
+
+| 地区 | 包含的博彩公司 |
+|---|---|
+| `eu`（默认）| Pinnacle、1xBet、Unibet、Betclic 等 |
+| `uk` | **bet365**、William Hill、Betfair、Ladbrokes 等 |
+| `au` / `us` | 澳洲 / 美国本地博彩公司 |
+
+Pinnacle 抽水最低，是判断「这个价到底好不好」最有参考价值的一家，所以默认
+留 `eu`。想看 bet365 的报价就加 `uk`，代价是配额翻倍。
 
 **配额要留意。** The Odds API 免费档一个月 500 次请求，而且只有抓赔率这一路
 计费（赛程 `/events` 和比分 `/scores` 都不计费）。代码里已经做了两道节流：

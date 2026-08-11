@@ -1161,14 +1161,27 @@ def refresh_market_odds(db: Session) -> dict:
     for comp in get_active_competitions(db):
         if comp.code not in odds_api.SPORT_KEYS:
             continue
-        # 先看库里这个赛事近期有没有比赛，没有就不花这次请求
-        soon = (db.query(models.Match)
+        # 窗口只用来决定「这个赛事这轮**要不要发请求**」——近期没有比赛的
+        # 联赛不值得花一次配额。它**不该**用来限制留下哪些结果。
+        #
+        # 第一版就是这么错的：拿 soon 当匹配池，于是博彩公司已经开盘、
+        # 接口也已经返回、配额也已经花掉的那些 6-14 天后的比赛，全部被当成
+        # 「对不上号」丢掉。实测的代价：2,304 场未来比赛里只有 21 场
+        # （0.9%）拿得到赔率——不是联赛没覆盖，是自己把结果扔了。
+        near = (db.query(models.Match.id)
                   .filter(models.Match.competition_id == comp.id,
                           models.Match.status == "upcoming",
                           models.Match.date >= today, models.Match.date <= horizon)
-                  .all())
-        if not soon:
+                  .first())
+        if not near:
             continue
+        # 匹配池取这个赛事**全部**未来比赛。返回里有多少就收多少——反正
+        # 请求已经发了，多收的部分不额外花一分配额。
+        soon = (db.query(models.Match)
+                  .filter(models.Match.competition_id == comp.id,
+                          models.Match.status == "upcoming",
+                          models.Match.date >= today)
+                  .all())
         # 队名对必须完全一致，日期允许差一天：The Odds API 的 commence_time
         # 是 UTC，而 openfootball 的赛程日期是当地比赛日，晚场会跨 UTC 零点
         # （美洲赛事尤其常见）。放宽到 ±1 天不会配错——同样两支球队两天内
