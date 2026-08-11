@@ -44,6 +44,13 @@ SPORT_KEYS = {
     "leagueone": "soccer_england_league1",
     "leaguetwo": "soccer_england_league2",
     "segunda": "soccer_spain_segunda_division",
+    # 意乙。同样从你真机 /v4/sports/ 的 45 个 soccer key 里核对出来的——
+    # 那份返回里意大利只有 soccer_italy_serie_a 和 soccer_italy_serie_b 两个。
+    "serieb": "soccer_italy_serie_b",
+    # 德乙/法乙。同样从那 45 个 key 里核对出来的：德国有 bundesliga /
+    # bundesliga2 / dfb_pokal / liga3 四个，法国有 ligue_one / ligue_two 两个。
+    "bundesliga2": "soccer_germany_bundesliga2",
+    "ligue2": "soccer_france_ligue_two",
     # 下面这批是为了**抓赔率**才加的（赛程照旧走 openfootball，不受影响：
     # 走不走 The Odds API 拿赛程由 _ODDS_FIXTURE_COMPETITIONS 单独控制，
     # 这几个不在那个集合里）。key 同样是从你真机 /v4/sports/ 的 45 个

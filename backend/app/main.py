@@ -149,6 +149,18 @@ def _seed_default_competition():
             # 所以它既没有未来赛程也没有赔率，摆在界面上只是占位置。
             ("nationalleague", "National League", "英格兰全国联赛",
              f"{BASE}/en.5.json", False),
+            # 意乙。跟英甲/英乙/西乙同一类：历史走 openfootball，2026-27 的赛程
+            # 上游还没发，先由 The Odds API 顶上（见 _ODDS_FIXTURE_COMPETITIONS）。
+            # data_source 用 .json 模板只是给 _resolve_data_source 认赛季用，
+            # 真正取数会自动选中 _TXT_SOURCES 里那条 .txt——it.2 的 .json 镜像
+            # 2021-24 三季是 404，只有 .txt 是全的。
+            ("serieb", "Serie B", "意乙", f"{BASE}/it.2.json", True),
+            # 德乙、法乙。跟意乙同一批接入，训练数据早就在 club 参数表里了
+            # （德乙 4,077 场、法乙 4,122 场），这次是把它们注册成完整赛事。
+            # 德乙的 .json 镜像是全的；法乙跟意乙一样 2021-24 三季 404，
+            # 所以 _TXT_SOURCES 里给它挂了 .txt，探测阶梯会自动选中。
+            ("bundesliga2", "2. Bundesliga", "德乙", f"{BASE}/de.2.json", True),
+            ("ligue2", "Ligue 2", "法乙", f"{BASE}/fr.2.json", True),
             ("ucl", "UEFA Champions League", "欧冠", f"{BASE}/uefa.cl.json", True),
             # 这两个数据源不是 openfootball，走完全不同的抓取路径（见
             # updater.py 的 run_full_update 里对 code 的分支判断），data_source

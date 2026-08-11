@@ -64,6 +64,11 @@ COMPETITION_SCOPE = {
     # 西甲↔西乙21支。英乙单独看跟上层只共享7支，是靠英甲这一级连上去的，
     # 所以这三个必须一起在同一张表里训练，见 train_mle_club.py 的说明。
     "leagueone": "club", "leaguetwo": "club", "segunda": "club",
+    # 意乙。桥：跟意甲共享 24 支升降级球队（实测），跟法乙/英甲同一量级。
+    # 训练数据只能走 .txt——football.json 的 it.2 在 2021-24 三季是 404。
+    "serieb": "club",
+    # 德乙/法乙。桥：德乙∩德甲 18 支、法乙∩法甲 24 支（实测升降级共享球队）。
+    "bundesliga2": "club", "ligue2": "club",
     # 全国联赛（英格兰第五级）。它没有 .json 镜像，训练数据走 .txt，
     # 见 train_mle_club.py 的 TXT_LEAGUES。桥：跟英乙共享升降级球队。
     "nationalleague": "club",
@@ -77,6 +82,8 @@ COMPETITION_NEUTRAL = {
     "epl": False, "laliga": False, "seriea": False, "bundesliga": False,
     "ligue1": False, "championship": False,      # 常规主客场联赛
     "leagueone": False, "leaguetwo": False, "segunda": False,
+    "serieb": False,
+    "bundesliga2": False, "ligue2": False,
     "nationalleague": False,
     "ucl": False,     # 欧冠只有决赛在中立场，训练数据里已按轮次区分，这里取多数情况
     "mls": False,

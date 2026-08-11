@@ -36,7 +36,30 @@ _ODDS_TXT_COMPETITIONS = {"mls", "efl_cup"}
 # 赛季文件（三个仓库整棵目录树 clone 下来搜过，2026-27 只有英超/英冠/
 # 西甲/法甲/荷甲/葡超六个文件），而 The Odds API 已经有下一轮的赛程。
 # 等 openfootball 补上之后这里可以撤掉，届时 .txt 源已经挂好会自动接管。
-_ODDS_FIXTURE_COMPETITIONS = {"leagueone", "leaguetwo", "segunda"}
+_ODDS_FIXTURE_COMPETITIONS = {"leagueone", "leaguetwo", "segunda",
+                              "serieb", "bundesliga2", "ligue2"}
+# 意乙/德乙/法乙的队名没有拿到过 The Odds API 的真实样本核对（英甲那批当初
+# 是逐队核对、写了 12 条别名才开的）。这三个改成靠 _reject_unknown_fixture_teams
+# 在运行时挡：查不到参数的队名直接拒收，并把名字报到更新状态条上。
+# 第一轮更新之后照着那份名单补别名即可，比先猜一版可靠。
+# 下面这段说明保留，记录当初为什么犹豫：
+#
+# 它的 sport key（soccer_italy_serie_b）已经核实存在、参数表也训练好了，
+# 差的只有一件事：The Odds API 用的意大利队名没有拿到过真实样本核对。
+# 英甲/英乙/西乙当初是拿用户真机跑出来的 /events 返回逐队核对过才开的
+# （70 支球队查出 12 条要加别名）。意甲那次的返回在传输中被截断了，
+# 意大利队名一个都没看到。
+#
+# 不核对就开的后果是**静默的**：队名对不上 → upsert_matches 按
+# (日期,主队,客队) 去重时把同一支队当成两支 → 参数查不到退回 (0,0) →
+# 界面照常显示一个看起来正常的概率。项目里"皇马被拆成两支球队"就是这么来的。
+#
+# 拿到下面这条命令的输出、逐队核对完别名，把 "serieb" 加回上面那个集合即可：
+#   curl -s "https://api.the-odds-api.com/v4/sports/soccer_italy_serie_b/events/?apiKey=KEY" \
+#     | python3 -c "import sys,json;[print(e['home_team'],'|',e['away_team']) for e in json.load(sys.stdin)]"
+#
+# 在那之前，意乙的历史赛果/回测/参数都是全的，只是没有未来赛程——而
+# openfootball 本来也还没发 2026-27，所以现状跟不加这一行是一样的。
 
 
 def _has_af_historical_data(db: Session, comp: "models.Competition") -> bool:
@@ -303,6 +326,17 @@ _TXT_SOURCES = {
     "en.3": "https://raw.githubusercontent.com/openfootball/england/master/{season}/3-league1.txt",
     "en.4": "https://raw.githubusercontent.com/openfootball/england/master/{season}/4-league2.txt",
     "es.2": "https://raw.githubusercontent.com/openfootball/espana/master/{season}/2-liga2.txt",
+    # 意乙。这条不是"兜底"是**唯一可用源**：football.json 的 it.2 在
+    # 2021-22/2022-23/2023-24 三季是 404（逐季 HTTP 验过），而那三季正好是
+    # 时间衰减权重最高的。.txt 从 2013-14 到 2025-26 一季不缺。
+    "it.2": "https://raw.githubusercontent.com/openfootball/italy/master/{season}/2-serieb.txt",
+    # 德乙。它的 .json 镜像其实是全的（逐季验过 2015-2026 全部 200），挂 .txt
+    # 只是为了跟其他联赛一致、以及万一镜像哪天断档时有退路。
+    "de.2": "https://raw.githubusercontent.com/openfootball/deutschland/master/{season}/2-bundesliga2.txt",
+    # 法乙。跟意乙一样，.json 在 2021-22/2022-23/2023-24 三季是 404，
+    # 这条 .txt 是那三季**唯一**的来源。注意法国仓库的目录结构跟别人不同
+    # （国家目录 + 文件名前缀），见 fr.1 那条注释。
+    "fr.2": "https://raw.githubusercontent.com/openfootball/france/master/france/{season}_fr2.txt",
     # 全国联赛：这条是唯一来源，不是兜底——football.json 没有 en.5。
     "en.5": "https://raw.githubusercontent.com/openfootball/england/master/{season}/5-nationalleague.txt",
     # 法甲。这条一开始漏掉了，因为 openfootball/france 的目录结构跟
@@ -400,6 +434,35 @@ def parse_openfootball_txt(text: str, season_start_year: int = None) -> list:
         s = line.strip()
         if s.startswith("#") or s.startswith("="):
             continue
+
+        # 行尾的方括号标注。三种真实见过的写法，处理方式不一样：
+        #
+        #   [cancelled] / [postponed] / [abandoned]
+        #       比赛没打完或根本没打，整行跳过。不跳的话剥完标注就变成一条
+        #       正常的"未开赛"记录，被当成赛程存进库。
+        #
+        #   [awarded]
+        #       判罚判定的比分（弃权/违规），源文件里是官方结果，比分照收，
+        #       只把标注剥掉。
+        #
+        # 不剥的后果是**静默的脏数据**，实测抓到 5 条（意乙 4、法乙 1）：
+        #   "US Salernitana 1919  3-0  AC Reggiana 1919   [awarded]"
+        #       → 客队被解析成 "AC Reggiana 1919         [awarded]"
+        #   "Cosenza Calcio  v Hellas Verona   0-3   [awarded]"
+        #       → 主队被解析成 "Cosenza Calcio          v Hellas Verona"
+        #         （比分在后面这种写法，标注一挡就套错了正则）
+        # 这些名字都只有 1 场、够不到 ≥10 场的拟合门槛，所以没污染参数——
+        # 但真实球队因此丢了那几场，而且界面上会冒出查无此队的"球队"。
+        #
+        # 只剥**行尾**的标注：首发名单里的队长标记 "[c]" 在行中间
+        # （"Filippo Romagna [c], Tarik ..."），不能碰，那些行本来也匹配不上
+        # 比赛的正则。
+        _tag = re.search(r"\s*\[([a-z ]+)\]\s*$", s)
+        if _tag:
+            if _tag.group(1) in ("cancelled", "postponed", "abandoned"):
+                continue
+            s = s[:_tag.start()].rstrip()
+            line = line[:len(line) - len(line.lstrip())] + s
 
         m = _TXT_ROUND.match(line)
         if m:
@@ -1049,6 +1112,44 @@ def resolve_bets(db: Session) -> int:
 _update_lock = threading.Lock()
 
 
+def _reject_unknown_fixture_teams(code: str, upcoming: list) -> tuple:
+    """把队名查不到参数的赛程挡在门外，返回 (留下的, 被拒的队名)。
+
+    为什么要这道闸门：The Odds API 用它自己一套队名，跟训练数据（openfootball）
+    的写法经常对不上。对不上的后果**完全是静默的**：
+      · upsert_matches 按 (日期,主队,客队) 去重，同一支队的两种写法会被
+        当成两支不同的队，同一场比赛存成两条记录
+      · dixon_coles 查不到参数，退回 (0,0) 兜底，照样算出一个看起来正常的
+        概率填在界面上
+    项目里"皇马被拆成两支球队"就是这么来的，而且是跑起来才发现的。
+
+    英甲/英乙/西乙当初是拿真实 /events 返回逐队核对、写了 12 条别名才开的。
+    意乙/德乙/法乙没有那份样本，所以改成运行时挡：查不到就不收，并把队名
+    原样报到更新状态里——第一轮更新之后就能拿到真实的对不上的名单，照着
+    补别名即可。比先猜一版别名再等出问题可靠。
+
+    只查参数表（文件），不碰数据库——这个函数在线程池里跑。
+    """
+    from .model import load_params, scope_for_competition
+    try:
+        known = set(load_params(scope_for_competition(code))["_index"].keys())
+    except Exception:
+        return upcoming, []          # 参数表读不出来时不拦，退回原行为
+    if not known:
+        return upcoming, []
+
+    kept, rejected = [], set()
+    for m in upcoming:
+        t1 = normalize_team_name(m.get("team1", "")).strip().lower()
+        t2 = normalize_team_name(m.get("team2", "")).strip().lower()
+        bad = [raw for raw, t in ((m.get("team1"), t1), (m.get("team2"), t2)) if t not in known]
+        if bad:
+            rejected.update(bad)
+            continue
+        kept.append(m)
+    return kept, sorted(rejected)
+
+
 def _fetch_competition_payload(plan) -> tuple:
     """抓一个赛事的 (已赛, 赛程)。**只做网络 I/O，绝对不碰数据库。**
 
@@ -1117,6 +1218,14 @@ def _fetch_competition_payload(plan) -> tuple:
         if not upcoming:
             try:
                 upcoming = odds_api.fetch_upcoming_events(plan.code)
+                upcoming, rejected = _reject_unknown_fixture_teams(plan.code, upcoming)
+                if rejected:
+                    # 报到界面的状态条上，不是只写日志——这批名字就是要补的
+                    # 别名清单，藏在日志里等于没有
+                    sub_fail.append("赛程队名对不上(已拒收): %s" % "、".join(rejected[:12]))
+                    logging.getLogger("valuebet.updater").warning(
+                        "[%s] 拒收 %d 个对不上参数表的队名: %s",
+                        plan.code, len(rejected), "、".join(rejected))
             except Exception as se:
                 # 赛程拿不到（没配 key、额度用尽、该联赛暂时没开盘）不该把
                 # 已经抓到的历史赛果一起丢掉——那批是训练和回测的基础。

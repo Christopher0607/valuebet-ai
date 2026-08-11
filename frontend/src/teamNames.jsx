@@ -454,6 +454,68 @@ export const TEAM_ZH = {
   "Real Valladolid CF": "巴拉多利德",    // 327 场, attack 0.0225
   "SD Eibar": "埃瓦尔",                  // 281 场, attack 0.0824
   "UD Las Palmas": "拉斯帕尔马斯",       // 327 场, attack 0.0817
+
+  // ── 意乙 + 德乙 + 法乙（2026-08 接入为完整赛事）─────────────
+  // key 取自 historical_results_club.csv 里的规范化队名，跟后端传过来的
+  // 字符串一字不差。只翻近两季（2024-07 起）还在踢、且参数表里有的球队——
+  // 更早消失的队不会出现在赛程和回测的可见范围里，翻了也没人看得到。
+  //
+  // 几个容易搞混的，写清楚免得以后被"修正"成错的：
+  //   Empoli / Sampdoria / Palermo / Spezia / Pisa / Cesena —— 这些队在
+  //     意甲块里可能有另一种写法（带 FC/US 前缀），两个 key 指向同一支队，
+  //     不是重复条目。
+  //   Hertha BSC、VfL Bochum、Hannover 96 —— 都是降级到德乙的老德甲队。
+  //   Red Star —— 法国的红星（巴黎 93 省），跟贝尔格莱德红星无关。
+  "AC Reggiana 1919": "雷吉亚纳",
+  "AS Cittadella": "奇塔代拉",
+  "Brescia Calcio": "布雷西亚",
+  "Calcio Padova": "帕多瓦",
+  "Carrarese Calcio": "卡拉雷塞",
+  "Cesena": "切塞纳",
+  "Cosenza Calcio": "科森扎",
+  "Delfino Pescara": "佩斯卡拉",
+  "Empoli": "恩波利",
+  "FC Südtirol": "南蒂罗尔",
+  "Juve Stabia": "尤文斯塔比亚",
+  "Mantova 1911 SSD": "曼托瓦",
+  "Modena": "摩德纳",
+  "Palermo": "巴勒莫",
+  "Pisa SC": "比萨",
+  "SSC Bari": "巴里",
+  "Sampdoria": "桑普多利亚",
+  "Spezia Calcio": "斯佩齐亚",
+  "US Avellino": "阿韦利诺",
+  "US Catanzaro": "卡坦扎罗",
+  "US Salernitana 1919": "萨勒尼塔纳",
+  "Virtus Entella": "恩泰拉",
+
+  "1. FC Kaiserslautern": "凯泽斯劳滕",
+  "1. FC Magdeburg": "马格德堡",
+  "1. FC Nürnberg": "纽伦堡",
+  "Arminia Bielefeld": "比勒费尔德",
+  "Dynamo Dresden": "德累斯顿迪纳摩",
+  "Eintracht Braunschweig": "布伦瑞克",
+  "Fortuna Düsseldorf": "杜塞尔多夫",
+  "Hannover 96": "汉诺威96",
+  "Hertha BSC": "柏林赫塔",
+  "Holstein Kiel": "荷尔斯泰因基尔",
+  "Jahn Regensburg": "雷根斯堡",
+  "Karlsruher SC": "卡尔斯鲁厄",
+  "Preußen Münster": "明斯特",
+  "SSV Ulm 1846": "乌尔姆",
+  "SV Darmstadt 98": "达姆施塔特",
+  "SpVgg Greuther Fürth": "菲尔特",
+  "VfL Bochum": "波鸿",
+
+  "FC Annecy": "安纳西",
+  "FC Martigues": "马蒂格",
+  "Grenoble Foot 38": "格勒诺布尔",
+  "Pau": "波城",
+  "Red Star": "红星",
+  "Rodez AF": "罗德兹",
+  "Stade Lavallois": "拉瓦勒",
+  "US Boulogne": "布洛涅",
+  "USL Dunkerque": "敦刻尔克",
 };
 
 // ── 语言切换（只影响队伍名，其余界面文字保持中文不变） ──────────
