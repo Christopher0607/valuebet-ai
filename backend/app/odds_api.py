@@ -25,6 +25,7 @@ The Odds API 客户端 —— 赛程、比分、以及（2026-08 起）1X2 盘�
 只存一个价的话这个差额无从衡量，见 ev_evidence.py 和 handoff/09。
 """
 import os
+import re
 import logging
 import requests
 
@@ -135,6 +136,49 @@ TEAM_ALIASES = {
 }
 
 
+_KEY_RE = re.compile(r"(apiKey|api_key|apikey)=[^&\s\"\']*", re.I)
+
+
+def _redact(text: str) -> str:
+    """把任何形式的 API key 从文本里抹掉。
+
+    不是洁癖，是真事故：requests 的 raise_for_status() 抛的异常消息里带着
+    **完整请求 URL**，而这个 URL 的查询串里就是 apiKey。这条异常一路被
+    run_full_update 收进 failed_comps → 存进 UpdateLog.detail → /api/status
+    原样回给前端 → **直接显示在页面横幅上**。线上真的出现过：
+
+        401 Client Error: Unauthorized for url:
+        https://api.the-odds-api.com/v4/sports/soccer_usa_mls/scores/?apiKey=1f888a5c0d6
+
+    key 被截断只是因为 detail 那里做了 [:120]，不是有意保护——换个短一点的
+    赛事名就会把整把 key 打出来。任何看得到这个页面的人都能拿走它。
+
+    所以在**抛出之前**就抹掉，而不是指望每个调用方记得处理。
+    """
+    return _KEY_RE.sub(r"\1=***", text or "")
+
+
+def _get(url: str, params: dict, timeout: int = 20):
+    """统一的请求入口：出错时抛不带 key 的异常。
+
+    三个 fetch_* 原来各自 requests.get + raise_for_status，key 就是从那里
+    漏出去的。收敛到一个函数，以后新增接口自动继承这个保护。
+    """
+    r = requests.get(url, params=params, timeout=timeout)
+    if r.status_code == 401:
+        # 401 的原因是确定的，直接给一句能照着做的话，不要甩原始 HTTP 错误
+        raise RuntimeError("ODDS_API_KEY 无效或已失效（401）——"
+                           "换过 key 的话记得同步改部署平台的环境变量")
+    if r.status_code == 429:
+        raise RuntimeError("The Odds API 配额用尽（429）——免费档每月 500 次，"
+                           "下个账单周期恢复")
+    try:
+        r.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(_redact(str(e))) from None
+    return r
+
+
 # 训练数据用 API-Football 简称的赛事。只有这两个才该套 TEAM_ALIASES——
 # 其余赛事走 club 参数表，队名是 openfootball 全称，套了会改坏。
 _SHORTNAME_LEAGUES = {"mls", "efl_cup"}
@@ -148,12 +192,7 @@ def fetch_upcoming_events(league_code: str) -> list:
     if not ODDS_API_KEY:
         raise RuntimeError("ODDS_API_KEY 未配置，跳过美职联/联赛杯的赛程抓取")
     sport_key = SPORT_KEYS[league_code]
-    r = requests.get(
-        f"{_BASE}/sports/{sport_key}/events/",
-        params={"apiKey": ODDS_API_KEY},
-        timeout=20,
-    )
-    r.raise_for_status()
+    r = _get(f"{_BASE}/sports/{sport_key}/events/", {"apiKey": ODDS_API_KEY})
     events = r.json()
 
     # TEAM_ALIASES **只**给美职联/联赛杯用，绝对不能对所有赛事套。
@@ -234,13 +273,9 @@ def fetch_h2h_odds(league_code: str, regions: str = None) -> tuple:
     if league_code not in SPORT_KEYS:
         raise RuntimeError(f"{league_code} 没有对应的 sport key，The Odds API 不收录这个赛事")
 
-    r = requests.get(
-        f"{_BASE}/sports/{SPORT_KEYS[league_code]}/odds/",
-        params={"apiKey": ODDS_API_KEY, "regions": regions or ODDS_API_REGIONS,
-                "markets": "h2h", "oddsFormat": "decimal"},
-        timeout=25,
-    )
-    r.raise_for_status()
+    r = _get(f"{_BASE}/sports/{SPORT_KEYS[league_code]}/odds/",
+             {"apiKey": ODDS_API_KEY, "regions": regions or ODDS_API_REGIONS,
+              "markets": "h2h", "oddsFormat": "decimal"}, timeout=25)
     quota = _quota_from(r)
     use_aliases = league_code in _SHORTNAME_LEAGUES
 
@@ -353,12 +388,8 @@ def fetch_recent_scores(league_code: str, days_from: int = 3) -> list:
         raise RuntimeError("ODDS_API_KEY 未配置，跳过美职联/联赛杯的赛果抓取")
     use_aliases = league_code in _SHORTNAME_LEAGUES
     sport_key = SPORT_KEYS[league_code]
-    r = requests.get(
-        f"{_BASE}/sports/{sport_key}/scores/",
-        params={"apiKey": ODDS_API_KEY, "daysFrom": days_from},
-        timeout=20,
-    )
-    r.raise_for_status()
+    r = _get(f"{_BASE}/sports/{sport_key}/scores/",
+             {"apiKey": ODDS_API_KEY, "daysFrom": days_from})
     events = r.json()
     if not isinstance(events, list):
         raise RuntimeError(

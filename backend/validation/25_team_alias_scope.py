@@ -37,6 +37,7 @@ TRAPS = ["Bradford City", "Leicester City", "Wigan Athletic", "Peterborough Unit
 
 def _stub(payload):
     class R:
+        status_code = 200          # _get 会读它，桩必须有（这个字段是后来加的）
         headers = {"x-requests-remaining": "400", "x-requests-used": "100"}
         def raise_for_status(self):
             pass

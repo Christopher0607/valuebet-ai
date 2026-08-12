@@ -1499,11 +1499,16 @@ def run_full_update(db: Session) -> dict:
                 # 部分失败照样算这次更新跑完了，但把失败的赛事记下来，
                 # 否则数据悄悄少了一个赛事却看不出来
                 log.status = "partial"
-                log.detail = "以下赛事抓取失败（其余正常）: " + "; ".join(failed_comps)
+                log.detail = odds_api._redact(
+                    "以下赛事抓取失败（其余正常）: " + "; ".join(failed_comps))
 
         except Exception as e:
             log.status = "error"
-            log.detail = str(e)[:500]
+            # 兜底脱敏。odds_api._get 已经在抛出前抹掉了 key，这里再过一遍是
+            # 因为这条 detail 会**原样显示在前端横幅上**，而异常可能来自任何
+            # 地方（比如以后有人新写一处 requests 调用忘了走 _get）。
+            # 展示给用户的字符串，脱敏要放在最后一道，不能只靠上游自觉。
+            log.detail = odds_api._redact(str(e))[:500]
             db.rollback()
 
         db.add(log)

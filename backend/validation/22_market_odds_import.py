@@ -31,6 +31,7 @@ from app.model import expected_value                                 # noqa: E40
 
 def _resp(payload, remaining="432", used="68"):
     class R:
+        status_code = 200          # _get 会读它，桩必须有（这个字段是后来加的）
         headers = {"x-requests-remaining": remaining, "x-requests-used": used}
         def raise_for_status(self):
             pass
