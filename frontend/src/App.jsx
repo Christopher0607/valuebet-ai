@@ -1063,8 +1063,13 @@ function StatusBanner({ status, updating, onUpdateNow, refreshing, refreshFailed
         ) : (
           <>
             {isAuthEnabled ? "云端运行中" : "本地运行中"} · 上次更新 {fdatetime(status.last_update)}
-            {status.last_severity === "error" && <span style={{ color: C.red }}> · 更新失败: {status.last_detail}</span>}
-            {status.last_severity === "warning" && <span style={{ color: C.gold }}> · {status.last_status_label}{status.last_detail ? `：${status.last_detail}` : ""}</span>}
+            {/* 更新失败/部分未更新的详情不再显示在这里。那段橙色文字在手机上
+                能占掉小半个屏幕，而它说的基本都是不影响下注的事（某支升班马
+                没历史数据之类）。
+                信息本身没丢：severity / status_label / detail 都还在
+                GET /api/status 的返回里，也还在 UpdateLog 表里，排查时直接
+                看接口就行——本轮的三个 bug（队名被别名表改坏、API key 泄漏、
+                参数表过期）都是从 detail 里看出来的，只是不必挂在首页上。 */}
           </>
         )}
       </span>
@@ -1252,7 +1257,10 @@ function DisclaimerModal({ onClose }) {
 // 变成几十行标题。
 //
 // 折叠面板默认全收起，只有用户自己点了才展开——不自动帮用户点开第一天。
-function DayGroups({ matches, renderMatch, selectedIds }) {
+// onToggleDay 只有串关页会传：给每个日期标题挂一个「全选这天 / 取消」的小按钮。
+// 串关一次要凑 3-6 条腿，通常就是从同一天的赛程里挑，一场场戳很费劲；
+// 顶部那个「全选」是整个筛选结果，粒度太粗（周末两天能有五六十场）。
+function DayGroups({ matches, renderMatch, selectedIds, onToggleDay }) {
   const days = useMemo(() => {
     const map = new Map();
     for (const m of matches) {
@@ -1322,6 +1330,19 @@ function DayGroups({ matches, renderMatch, selectedIds }) {
                 {nSel > 0 && (
                   <span style={{ background: C.accentDim, color: C.accent, borderRadius: 5,
                                  padding: "1px 6px", fontSize: 10, fontWeight: 700 }}>已选 {nSel}</span>
+                )}
+                {onToggleDay && (
+                  // stopPropagation 是必须的：这个小按钮长在日期标题（一个 button）
+                  // 里面，不拦住的话点「全选这天」会顺带把这天折叠起来，
+                  // 刚选好的东西立刻从眼前消失。
+                  <span
+                    role="button"
+                    onClick={e => { e.stopPropagation(); onToggleDay(list, nSel < list.length); }}
+                    style={{ border: `1px solid ${C.accent}66`, color: C.accent,
+                             borderRadius: 5, padding: "1px 7px", fontSize: 10,
+                             fontWeight: 700, cursor: "pointer", userSelect: "none" }}>
+                    {nSel >= list.length ? "取消" : "全选"}
+                  </span>
                 )}
                 <span style={{ background: C.muted, color: C.text, borderRadius: 5,
                                padding: "1px 7px", fontSize: 11, fontWeight: 700 }}>{list.length}</span>
@@ -2335,6 +2356,20 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
     }
   }
 
+  // 按天全选/取消（DayGroups 的日期标题上那个小按钮）。只动这一天的场次，
+  // 其他天已经选好的保持原样——串关经常是跨天凑腿的，误清掉别天的选择
+  // 比多点几下更烦人。
+  function toggleDay(list, on) {
+    setSelected(s => {
+      const next = { ...s };
+      for (const m of list) {
+        if (on) next[m.id] = true;
+        else delete next[m.id];
+      }
+      return next;
+    });
+  }
+
   function updateMinLegs(v) {
     setMinLegs(v);
     setMaxLegs(m => Math.max(m, v));
@@ -2556,7 +2591,8 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
         <Empty text="即将赛事都还没有输入赔率——先在「单场」里给要考虑的比赛填上赔率，才会出现在这里" />
       )}
 
-      <DayGroups matches={withOdds} selectedIds={new Set(selectedIds)} renderMatch={m => {
+      <DayGroups matches={withOdds} selectedIds={new Set(selectedIds)}
+                 onToggleDay={toggleDay} renderMatch={m => {
         const isSel = !!selected[m.id];
         const p = m.prediction;
         return (
