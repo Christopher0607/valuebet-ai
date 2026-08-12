@@ -175,6 +175,21 @@ class MarketOdds(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class AppState(Base):
+    """一张极简的键值表，存"整个实例共享、跟用户无关"的小状态。
+
+    目前只有一个 key：params_fingerprint —— 参数表文件的指纹。
+    update_predictions 靠它判断"参数表有没有重新训练过"：没变就只算新比赛，
+    变了就全量重算。存在库里而不是内存里，是因为 Render 免费档一休眠就
+    重启进程，内存里的指纹每次都是空的，那样每次冷启动都会全量重算，
+    等于没优化。
+    """
+    __tablename__ = "app_state"
+    key = Column(String, primary_key=True)
+    value = Column(String)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Bet(Base):
     """Virtual bets — for mathematically testing the model, not real money."""
     __tablename__ = "bets"

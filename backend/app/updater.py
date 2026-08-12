@@ -13,6 +13,7 @@ each season, and the file path itself encodes the season (e.g. "2025-26").
 See fetch_results_for_league() and the SEASON_PROBE_ORDER logic below for
 how this is handled without hardcoding a season that will go stale.
 """
+import os
 import requests
 import threading
 import logging
@@ -987,6 +988,38 @@ def update_bayesian_states_for_newly_played_matches(db: Session) -> int:
     return updated_teams
 
 
+def _params_fingerprint() -> str:
+    """参数表文件的指纹：每个文件的 (大小, 修改时间)。
+
+    用文件属性而不是读内容做哈希，是因为这几个 json 加起来几百 KB，每轮
+    更新都读一遍纯属浪费——而我们只需要知道"变没变"。重新训练必然改写
+    文件，mtime 和大小至少有一个会变。
+    """
+    from .model import _PARAM_FILES, _TRAINING_DIR
+    parts = []
+    for name in sorted(_PARAM_FILES.values()):
+        path = os.path.join(_TRAINING_DIR, name)
+        try:
+            st = os.stat(path)
+            parts.append("%s:%d:%d" % (name, st.st_size, int(st.st_mtime)))
+        except OSError:
+            parts.append("%s:missing" % name)
+    return "|".join(parts)
+
+
+def _get_app_state(db: Session, key: str):
+    row = db.query(models.AppState).filter_by(key=key).first()
+    return row.value if row else None
+
+
+def _set_app_state(db: Session, key: str, value: str):
+    row = db.query(models.AppState).filter_by(key=key).first()
+    if row is None:
+        db.add(models.AppState(key=key, value=value))
+    else:
+        row.value = value
+
+
 def update_predictions(db: Session) -> int:
     """
     Runs Dixon-Coles for every match. Uses each team's current Bayesian
@@ -997,7 +1030,36 @@ def update_predictions(db: Session) -> int:
     """
     from .model import BayesianTeamState
 
-    matches = db.query(models.Match).all()
+    # 已经算过、而且**不可能再变**的比赛跳过不取。
+    #
+    # 一场已完赛、已有预测、rps 也已经算出来的比赛，它的预测是定死的：
+    # 比分不会再改，参数表不会在两次更新之间变（变了只可能是重新训练+
+    # 重新部署，那时进程重启、下面的指纹对不上，会全量重算）。原来每轮
+    # 都把这类比赛连同预测一起读出来、重算一遍、再写回去——绝大多数比赛
+    # 属于这一类。
+    #
+    # 为什么值得改：Supabase 免费档 egress 是 5 GB/月，实测被撑到 5.28 GB
+    # 而数据库本身只有 34 MB。一次全量更新读写约 12,700 行（≈3 MB），
+    # 而其中六千多条是重算已经定死的旧比赛。
+    #
+    # 参数表指纹（文件 mtime+大小）存在 app_state 里。指纹变了 = 重新训练
+    # 过，这时必须全量重算，否则旧预测会跟新参数不一致——这种不一致是
+    # 静默的，界面上看不出来。
+    fp = _params_fingerprint()
+    full_rebuild = _get_app_state(db, "params_fingerprint") != fp
+
+    q = db.query(models.Match)
+    if not full_rebuild:
+        done = db.query(models.Prediction.match_id).filter(
+            models.Prediction.rps.isnot(None)).subquery()
+        q = q.filter(~models.Match.id.in_(db.query(done.c.match_id)))
+    matches = q.all()
+
+    logging.getLogger("valuebet.updater").info(
+        "[predictions] %s，本轮处理 %d 场（库里共 %d 场）",
+        "参数表变了，全量重算" if full_rebuild else "增量：跳过已定稿的旧比赛",
+        len(matches), db.query(models.Match).count())
+
     # 一次性查出赛事表，循环里直接查字典，不要每场比赛都打一次数据库
     comp_by_id = {c.id: c for c in db.query(models.Competition).all()}
 
@@ -1015,7 +1077,15 @@ def update_predictions(db: Session) -> int:
         (r.team_name, r.competition_id): r
         for r in db.query(models.BayesianTeamStateRow).all()
     }
-    pred_by_match = {p.match_id: p for p in db.query(models.Prediction).all()}
+    # 只取本轮要处理的那些比赛的预测。原来是整张 Prediction 表读出来
+    # （六千多条），而增量模式下只会用到其中两千多条——多读的部分是纯粹的
+    # Supabase egress 浪费。分批 IN 是因为 Postgres 的参数个数有上限。
+    pred_by_match = {}
+    _ids = [m.id for m in matches]
+    for _i in range(0, len(_ids), 900):
+        for p in db.query(models.Prediction).filter(
+                models.Prediction.match_id.in_(_ids[_i:_i + 900])).all():
+            pred_by_match[p.match_id] = p
 
     # commit() 默认会让 session 里所有已加载对象过期，下一次访问 m.team1
     # 就得为那一行再发一次 SELECT。配合下面的分批提交，等于每提交一次就
@@ -1026,8 +1096,14 @@ def update_predictions(db: Session) -> int:
     prev_expire = db.expire_on_commit
     db.expire_on_commit = False
     try:
-        return _update_predictions_inner(db, matches, comp_by_id, bayes_by_key,
-                                         pred_by_match, BayesianTeamState)
+        n = _update_predictions_inner(db, matches, comp_by_id, bayes_by_key,
+                                      pred_by_match, BayesianTeamState)
+        # 指纹只在**跑完之后**才写。中途挂掉的话指纹还是旧的，下一轮会
+        # 重新全量算——宁可多算一次，也不能出现"指纹说算过了、实际只算了
+        # 一半"，那种不一致在界面上完全看不出来。
+        _set_app_state(db, "params_fingerprint", fp)
+        db.commit()
+        return n
     finally:
         db.expire_on_commit = prev_expire
 
