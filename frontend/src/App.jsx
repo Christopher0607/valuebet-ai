@@ -2365,6 +2365,49 @@ function recomputeCombo(combo, legOdds, settings) {
   };
 }
 
+// 把推荐卡片里改过的单腿赔率，合并成可以直接 POST /api/odds/bulk 的条目。
+//
+// 规则：**只覆盖你改的那一个结果**（主/平/客其一），同一场另外两个原样保留。
+// Odds 表一行存三个价，不带上另外两个的话它们会变成空，那场比赛在单场页
+// 就没法算 EV 了——这正是用户要的「填的那个覆盖上去，另外2个保留」。
+//
+// 另外两个的取值跟串关页初始化输入框同一个来源（oddsState）：你自己填过的
+// 价优先，没填过用市场平均价兜底。
+//
+// 主客两边缺一个就不存，放进 missing 里报给用户——后端 OddsInput 里这两个
+// 是必填，瞎填一个数进去比不存更糟。平局价允许缺（有人只填主客）。
+//
+// 抽成模块级纯函数是为了能直接测：组件里那份只负责发请求和更新界面。
+function buildLegOddsWriteback(combo, legOddsForCombo, oddsState, settings) {
+  const r = recomputeCombo(combo, legOddsForCombo, settings);
+  const items = [];
+  const missing = [];
+  combo.legs.forEach((leg, j) => {
+    if (r.list[j] === leg.odds) return;              // 这条腿没改，不用动
+    const cur = oddsState?.[leg.match_id] || {};
+    const num = v => {
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const merged = {
+      home: leg.outcome === "home" ? r.list[j] : num(cur.home),
+      draw: leg.outcome === "draw" ? r.list[j] : num(cur.draw),
+      away: leg.outcome === "away" ? r.list[j] : num(cur.away),
+    };
+    if (merged.home == null || merged.away == null) {
+      missing.push({ match_id: leg.match_id, outcome: leg.outcome, label: leg.label });
+      return;
+    }
+    items.push({
+      match_id: leg.match_id,
+      odds_home: merged.home,
+      odds_draw: merged.draw,
+      odds_away: merged.away,
+    });
+  });
+  return { items, missing };
+}
+
 function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRefresh }) {
   const zhTeam = useZhTeam();
   const [selected, setSelected] = useState({});   // { matchId: true }
@@ -2407,6 +2450,8 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
   // 按组合序号存而不是按 match_id：同一场比赛可能出现在好几个推荐组合里，
   // 而你在平台上是一张票一张票下的，改这张的价不该悄悄改掉另一张。
   const [legOdds, setLegOdds] = useState({});
+  const [savingOdds, setSavingOdds] = useState(null);
+  const [savedOdds, setSavedOdds] = useState(null);
 
   const selectedIds = Object.keys(selected).filter(id => selected[id]).map(Number);
 
@@ -2537,6 +2582,56 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
 
   function setOddsField(id, field, value) {
     setOdds(o => ({ ...o, [id]: { ...o[id], [field]: value } }));
+  }
+
+  // 把推荐卡片里改过的单腿赔率存回系统。
+  //
+  // 只覆盖你改的那一个结果（主/平/客其一），同一场另外两个原样保留——
+  // Odds 表一行存三个价，不带上另外两个的话它们会变成空，那场比赛在
+  // 单场页就没法算 EV 了。另外两个的取值跟这一页初始化输入框时同一个来源：
+  // 你自己填过的价优先，没填过用市场平均价兜底。
+  //
+  // Odds 表是**追加**的，不是原地改：每次存都是新增一行，读的时候取
+  // recorded_at 最新的那条。所以这不会抹掉历史价，改错了再存一次就行。
+  async function saveLegOddsBack(combo, comboIdx) {
+    const { items, missing } = buildLegOddsWriteback(
+      combo, legOdds[comboIdx], odds, settings);
+    const names = missing.map(m => legDisplay(m.match_id, m.outcome) || m.label);
+
+    if (!items.length) {
+      setError(names.length
+        ? `这几条腿缺同场另一边的赔率，存不了：${names.join("、")}`
+        : "没有改过的赔率可存");
+      return;
+    }
+    setSavingOdds(comboIdx);
+    try {
+      const res = await api("/odds/bulk", { method: "POST", body: JSON.stringify({ items }) });
+      // 本页的输入框也跟着更新，否则同一场比赛在别的推荐组合里、以及下面
+      // 单场列表里显示的还是旧价，看起来像没存进去。
+      setOdds(o => {
+        const next = { ...o };
+        for (const it of items) {
+          next[it.match_id] = {
+            home: String(it.odds_home),
+            draw: it.odds_draw == null ? "" : String(it.odds_draw),
+            away: String(it.odds_away),
+          };
+        }
+        return next;
+      });
+      setSavedOdds(`${comboIdx}:${res.saved ?? items.length}`);
+      setTimeout(() => setSavedOdds(null), 2500);
+      if (names.length) {
+        setError(`已存 ${items.length} 条；另有缺同场另一边赔率而跳过的：${names.join("、")}`);
+      }
+      // 让 /api/matches 重新拉一遍，单场页和下次搜索都用新价。
+      if (onRefresh) onRefresh();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSavingOdds(null);
+    }
   }
 
   async function generate() {
@@ -2897,6 +2992,20 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
                       </span>
                     )}
                   </span>
+                  {/* 存回系统：只覆盖你改的那一个结果，同一场另外两个原样保留。
+                      Odds 表是追加的，存错了再存一次就行，不会抹掉历史价。 */}
+                  <button
+                    type="button"
+                    onClick={() => saveLegOddsBack(combo, i)}
+                    disabled={savingOdds === i}
+                    title="把改过的价写回系统。同一场另外两个结果的价保持不变；单场页和下次搜索都会用新价"
+                    style={{ border: `1px solid ${C.accent}`, background: "transparent", color: C.accent,
+                             borderRadius: 5, padding: "3px 9px", fontSize: 10, whiteSpace: "nowrap",
+                             opacity: savingOdds === i ? 0.5 : 1 }}>
+                    {savingOdds === i ? "存…"
+                      : savedOdds?.startsWith(`${i}:`) ? `✓ 已存 ${savedOdds.split(":")[1]} 场`
+                      : "存回系统"}
+                  </button>
                   <button
                     type="button"
                     onClick={() => setLegOdds(o => ({ ...o, [i]: {} }))}

@@ -78,7 +78,7 @@ const esbuild = await import(path.join(NM, "esbuild", "lib", "main.js"));
 const SHADOW = path.join(FRONTEND, "src", ".__test_leg_entry.jsx");
 fs.writeFileSync(SHADOW,
   fs.readFileSync(path.join(FRONTEND, "src", "App.jsx"), "utf8")
-  + "\nexport { recomputeCombo, parlayKellyPct };\n");
+  + "\nexport { recomputeCombo, parlayKellyPct, buildLegOddsWriteback };\n");
 const stub = {
   name: "stub",
   setup(b) {
@@ -116,7 +116,7 @@ try {
   }
   if (!up) throw new Error("后端起不来:\n" + srvErr);
 
-  const { recomputeCombo } = await import(OUT + `?t=${Date.now()}`);
+  const { recomputeCombo, buildLegOddsWriteback } = await import(OUT + `?t=${Date.now()}`);
   const settings = await (await fetch(`${BASE}/settings`)).json();
 
   const matches = (await (await fetch(`${BASE}/matches?status_filter=upcoming`)).json());
@@ -241,6 +241,84 @@ print(json.dumps(out))
     combo, Object.fromEntries(combo.legs.map((_, j) => [j, "1.01"])), settings);
   check("EV 为负", neg.ev < 0, `实际 ${neg.ev}`);
   check("凯利建议金额为 0", neg.kellyAmount === 0, `实际 ${neg.kellyAmount}`);
+  // ── 存回系统：只覆盖改的那一个，另外两个保留 ──────────────
+  console.log("\n【7】把改过的价存回系统");
+  // 界面上那三个输入框的现值。串关页就是拿它初始化的：自己填过的价优先，
+  // 没填过用市场平均价兜底。存回时另外两个结果的价从这里取。
+  const oddsState = {};
+  for (const leg of combo.legs) {
+    oddsState[leg.match_id] = { home: "1.11", draw: "2.22", away: "3.33" };
+  }
+  const leg0 = combo.legs[0];
+  const FIELD = { home: "odds_home", draw: "odds_draw", away: "odds_away" };
+  const ORIG = { odds_home: 1.11, odds_draw: 2.22, odds_away: 3.33 };
+  const f0 = FIELD[leg0.outcome];
+  const keep0 = ["odds_home", "odds_draw", "odds_away"].filter(x => x !== f0);
+
+  const w1 = buildLegOddsWriteback(combo, { 0: "4.44" }, oddsState, settings);
+  check("只有改过的那一条腿被收进来", w1.items.length === 1, `实际 ${w1.items.length} 条`);
+  check("没有缺价被跳过的", w1.missing.length === 0);
+  if (w1.items.length === 1) {
+    const it = w1.items[0];
+    check(`改的那一路（${leg0.outcome}）被覆盖成 4.44`, it[f0] === 4.44, JSON.stringify(it));
+    check(`另外两路（${keep0.join("/")}）原样保留`,
+          keep0.every(f => it[f] === ORIG[f]), JSON.stringify(it));
+    check("match_id 对得上", it.match_id === leg0.match_id);
+  }
+
+  const w2 = buildLegOddsWriteback(combo, { 0: "4.44", 2: "5.55" }, oddsState, settings);
+  check("改两条腿就出两条（分属两场比赛）", w2.items.length === 2, `实际 ${w2.items.length}`);
+  check("两条的 match_id 不同", w2.items[0]?.match_id !== w2.items[1]?.match_id);
+  check("没改的腿一条都没混进来",
+        !w2.items.some(it => it.match_id === combo.legs[1].match_id));
+  check("什么都没改时不产生任何条目",
+        buildLegOddsWriteback(combo, undefined, oddsState, settings).items.length === 0);
+
+  console.log("\n【8】同场另一边缺价时宁可跳过，也不瞎填");
+  const holed = { [leg0.match_id]: { home: "", draw: "", away: "" } };
+  const w3 = buildLegOddsWriteback(combo, { 0: "4.44" }, holed, settings);
+  check("被放进 missing 而不是硬存", w3.items.length === 0 && w3.missing.length === 1,
+        `items=${w3.items.length} missing=${w3.missing.length}`);
+  // 平局价缺是允许的：有人只填主客
+  const noDraw = { [leg0.match_id]: { home: "1.11", draw: "", away: "3.33" } };
+  const w4 = buildLegOddsWriteback(combo, { 0: "4.44" }, noDraw, settings);
+  check("只缺平局价时照存，平局记为 null",
+        w4.items.length === 1 && (leg0.outcome === "draw" || w4.items[0].odds_draw === null),
+        JSON.stringify(w4.items[0]));
+
+  console.log("\n【9】真的存进去，再从 /api/matches 读回来核对");
+  const before = await (await fetch(`${BASE}/matches?status_filter=upcoming`)).json();
+  const b0 = before.find(m => m.id === leg0.match_id);
+  check("存之前这场没有 latest_odds（干净起点）", !b0.latest_odds, JSON.stringify(b0.latest_odds));
+
+  const saveRes = await (await fetch(`${BASE}/odds/bulk`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items: w1.items }),
+  })).json();
+  check("后端确认存了 1 条", saveRes.saved === 1, JSON.stringify(saveRes));
+
+  const after = await (await fetch(`${BASE}/matches?status_filter=upcoming`)).json();
+  const a0 = after.find(m => m.id === leg0.match_id);
+  check("现在读得到 latest_odds", !!a0.latest_odds, JSON.stringify(a0.latest_odds));
+  if (a0.latest_odds) {
+    check("读回来改的那一路是 4.44", a0.latest_odds[f0] === 4.44, JSON.stringify(a0.latest_odds));
+    check("读回来另外两路还是原值",
+          keep0.every(x => a0.latest_odds[x] === ORIG[x]), JSON.stringify(a0.latest_odds));
+  }
+  check("别的比赛没被牵连",
+        after.filter(m => m.latest_odds).length === 1,
+        `有 ${after.filter(m => m.latest_odds).length} 场有 latest_odds，应该只有 1 场`);
+
+  // 再存一次不同的价 —— Odds 是追加表，读的时候取最新那条
+  const w5 = buildLegOddsWriteback(combo, { 0: "6.66" }, oddsState, settings);
+  await fetch(`${BASE}/odds/bulk`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items: w5.items }),
+  });
+  const after2 = await (await fetch(`${BASE}/matches?status_filter=upcoming`)).json();
+  const a2 = after2.find(m => m.id === leg0.match_id);
+  check("存第二次后读到的是最新那条 6.66（存错了可以再存一次改回来）",
+        a2.latest_odds?.[f0] === 6.66, JSON.stringify(a2.latest_odds));
 } finally {
   srv.kill("SIGTERM");
   try { fs.unlinkSync(OUT); } catch { /* 已删 */ }

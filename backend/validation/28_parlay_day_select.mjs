@@ -222,6 +222,7 @@ const SUGGEST = {
 };
 
 const posted = [];
+const savedBack = [];
 globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
   if (u.endsWith("/parlay/suggest")) {
@@ -232,6 +233,11 @@ globalThis.fetch = async (url, opts = {}) => {
     posted.push(JSON.parse(opts.body));
     return { ok: true, status: 200, headers: new dom.window.Headers(),
              json: async () => ({ id: 1 }) };
+  }
+  if (u.endsWith("/odds/bulk")) {
+    savedBack.push(JSON.parse(opts.body));
+    return { ok: true, status: 200, headers: new dom.window.Headers(),
+             json: async () => ({ saved: JSON.parse(opts.body).items.length, skipped: 0 }) };
   }
   throw new Error("测试里没预期到的请求: " + u);
 };
@@ -312,6 +318,25 @@ if (posted.length === 1) {
         Math.abs(body.ev_at_bet - 0.65) < 1e-9, `实际 ${body.ev_at_bet}`);
   check("联合概率原样透传，没被赔率带着变",
         body.joint_probability === COMBO.joint_probability, `实际 ${body.joint_probability}`);
+}
+
+// 存回系统：只覆盖改的那一路，同场另外两个保留
+const saveBtn = $$("button").find(b => b.textContent === "存回系统");
+check("有「存回系统」按钮", !!saveBtn);
+if (saveBtn) {
+  await act(async () => {
+    saveBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    await new Promise(r => setTimeout(r, 0));
+  });
+  check("发出了一次 /odds/bulk", savedBack.length === 1, `实际 ${savedBack.length} 次`);
+  const it = savedBack[0]?.items?.[0];
+  check("只带了改过的那一场", savedBack[0]?.items?.length === 1,
+        JSON.stringify(savedBack[0]));
+  // 第一腿是 outcome=home，改成了 2.50；这一场的市场平均价是 2.1/3.3/3.5
+  check("主队那一路被覆盖成 2.5", it?.odds_home === 2.5, JSON.stringify(it));
+  check("平局价保留原来的 3.3", it?.odds_draw === 3.3, JSON.stringify(it));
+  check("客队价保留原来的 3.5", it?.odds_away === 3.5, JSON.stringify(it));
+  check("按钮给出已存反馈", /已存/.test(text()));
 }
 
 // 复原
