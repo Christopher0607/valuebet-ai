@@ -121,6 +121,13 @@ class Prediction(Base):
     predicted = Column(String)                                      # 'win1' | 'draw' | 'win2'
     is_correct = Column(Boolean, nullable=True)
     rps = Column(Float, nullable=True)
+    # 跟 Match.updated_at 同样的作用，但这里是被 /api/matches 的 ETag 逼出来的：
+    # 预测行大量是**原地修改**（比赛踢完后回填 rps 和 is_correct，重训参数后
+    # 重算概率），行数和最大 id 都不动。没有这一列，指纹就看不见这类改动，
+    # 客户端会一直收到 304、永远看不到刚算好的预测。
+    # 这不是推测——validation/29_etag_freshness.py 里「回填 rps」那两条断言
+    # 第一次跑就是红的，这一列是为了修它才加的。
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     match = relationship("Match")
 
@@ -422,6 +429,7 @@ _SCHEMA_PATCHES = [
     ("parlay_bets", "owner_id", "VARCHAR"),
     ("withdrawals", "owner_id", "VARCHAR"),
     ("odds", "owner_id", "VARCHAR"),
+    ("predictions", "updated_at", "TIMESTAMP"),
 ]
 
 

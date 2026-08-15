@@ -28,6 +28,12 @@ sys.path.insert(0, os.path.join(HERE, ".."))
 from app import odds_api                                             # noqa: E402
 from app.model import expected_value                                 # noqa: E402
 
+# 同 23 号：脚本跑在开发机已有的 valuebet.db 上，生产启动时会先补新列，
+# 这里也补一遍，免得模型一加列脚本就以 "no such column" 挂掉——那挂的是
+# 环境，不是被测的代码。
+from app.models import init_db as _init_db                            # noqa: E402
+_init_db()
+
 
 def _resp(payload, remaining="432", used="68"):
     class R:

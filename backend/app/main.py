@@ -6,7 +6,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, insert
 from datetime import datetime
@@ -54,6 +54,14 @@ app.add_middleware(
     allow_origin_regex=r"http://(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):5173",
     allow_methods=["*"],
     allow_headers=["*"],
+    # ETag 必须显式暴露，否则跨域时前端**读不到**这个响应头。
+    # CORS 默认只让 JS 看到六个「简单」响应头，ETag 不在其中——
+    # allow_headers=["*"] 管的是请求头，跟这个是两回事。
+    # 这正是那种"本地怎么测都对、一部署就失效"的坑：本地前端是同源
+    # （后端自己托管 dist），没有 CORS，res.headers.get('etag') 一直有值；
+    # 云端前端在 Vercel、后端在 Render，跨域，同一行代码拿到的是 null，
+    # 于是每次都当成"没有 ETag"重新下载 4.8 MB，优化完全失效且不报错。
+    expose_headers=["ETag"],
 )
 
 
@@ -246,6 +254,106 @@ def _is_owned(row, owner: str) -> bool:
     return not AUTH_ENABLED and row.owner_id is None
 
 
+# ══════════════════════════════════════════════════════════
+# 条件请求（ETag / 304）
+# ══════════════════════════════════════════════════════════
+#
+# 起因：前端每次打开页面都会先用 localStorage 的缓存把界面画出来，然后
+# 后台再把十个接口重拉一遍（横幅上那句"显示的是上次的数据，正在后台更新"
+# 就是这个阶段）。实测 9,500 场的库里，这十个接口一共 4,885 KB，其中
+# /api/matches 一个人占 4,880 KB、耗时占 87%——而里面 8,550 场是**已经
+# 踢完、永远不会再变**的历史比赛。等于每次进网站都把同一份历史重新下载
+# 一遍。免费档 Render + 远端 Postgres 上这就是那段肉眼可见的等待。
+#
+# 做法是标准的 HTTP 条件请求：响应带 ETag，客户端下次带 If-None-Match，
+# 没变就回 304（空体）。省掉的不只是流量，还有服务端序列化 9,500 个对象
+# 的 CPU——算指纹只要几条聚合查询。
+#
+# 指纹怎么算才**不会漏**（这是唯一有风险的地方，漏了就是用户看到旧数据）：
+#   · 比赛和预测只在 run_full_update 里被改动，而它每跑一轮必写一行
+#     UpdateLog。所以 UpdateLog 的最大 id + ran_at 就覆盖了这两张表的
+#     任何变化，包括"比分填进去了""rps 回填了"这种 count 不变的原地修改。
+#   · 再叠上 matches 的行数 / 最大 id / 最大 updated_at 作为第二道保险，
+#     万一将来有人绕开 run_full_update 直接写库也能察觉。
+#   · latest_odds 是按账号隔离的，用户自己 POST 赔率不经过 UpdateLog，
+#     所以单独把该账号 Odds 的行数和最大 id 也算进去。
+#   · 停用赛事会改变返回的比赛集合，把 is_active 的状态也算进去。
+# 宁可多变（多下载一次，只是慢一点）也不能少变（看到旧数据）。
+_ETAG_VERSION = "v1"
+
+
+def _data_version(db: Session, owner: str) -> str:
+    from sqlalchemy import func
+
+    log_id, log_at = db.query(func.max(UpdateLog.id), func.max(UpdateLog.ran_at)).one()
+    n_match, max_match, match_at = db.query(
+        func.count(Match.id), func.max(Match.id), func.max(Match.updated_at)).one()
+    # 预测必须连 updated_at 一起看：比赛踢完后回填 rps / is_correct、重训后
+    # 重算概率，全都是原地修改，count 和 max(id) 一动不动。
+    # 另外单独数一次「已经有 rps 的行数」——历史行的 updated_at 是这次加列
+    # 之后才回填的，在被改到之前是 NULL，这个计数能兜住那段过渡期。
+    n_pred, max_pred, pred_at = db.query(
+        func.count(Prediction.id), func.max(Prediction.id),
+        func.max(Prediction.updated_at)).one()
+    n_scored = db.query(func.count(Prediction.id)).filter(
+        Prediction.rps.isnot(None)).scalar()
+    n_mkt, max_mkt = db.query(func.count(MarketOdds.id), func.max(MarketOdds.id)).one()
+    n_odds, max_odds = _owned(
+        db.query(func.count(Odds.id), func.max(Odds.id)), Odds, owner).one()
+    # 停用的赛事 id 拼进去——停用/启用会改变 /api/matches 返回的比赛集合，
+    # 而它不走 run_full_update（是启动时 seeding 改的），UpdateLog 察觉不到。
+    inactive = ",".join(str(c.id) for c in db.query(Competition.id).filter(
+        Competition.is_active == False).order_by(Competition.id).all())   # noqa: E712
+    return "|".join(str(x) for x in (
+        _ETAG_VERSION, log_id, log_at, n_match, max_match, match_at,
+        n_pred, max_pred, pred_at, n_scored, n_mkt, max_mkt,
+        n_odds, max_odds, inactive))
+
+
+def _etag(*parts) -> str:
+    """指纹本身可能带空格/冒号（datetime 的字符串形式），不能直接当 ETag——
+    HTTP 要求它是加了引号的 token。哈希一遍既规范又短。"""
+    import hashlib
+    return '"' + hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:24] + '"'
+
+
+def _not_modified(request: Request, tag: str) -> bool:
+    """客户端手上那份是不是就是这一份。
+
+    If-None-Match 允许带多个值、也允许 W/ 弱校验前缀，所以要拆开逐个比，
+    不能整串相等——只按整串比的话，浏览器自己加了 W/ 前缀就永远不命中，
+    ETag 等于白做。
+    """
+    header = request.headers.get("if-none-match")
+    if not header:
+        return False
+    for candidate in header.split(","):
+        candidate = candidate.strip()
+        if candidate.startswith("W/"):
+            candidate = candidate[2:]
+        if candidate == tag or candidate == "*":
+            return True
+    return False
+
+
+def _conditional(request: Request, tag: str) -> Optional[Response]:
+    """命中就返回 304 响应，没命中返回 None（调用方照常算数据）。
+
+    用 Response 不用 JSONResponse：304 按 RFC 9110 不能带响应体，而
+    JSONResponse(content=None) 会实实在在写出四个字节的 "null"。
+    多数客户端会忽略它，但那是"碰巧没事"，不是对的。
+    """
+    if _not_modified(request, tag):
+        return Response(status_code=304, headers={
+            "ETag": tag,
+            # no-cache 不是"不要缓存"，是"可以存，但每次用之前必须回来问一次"。
+            # 正是想要的行为：浏览器留着上次的响应体，每次只发一个几百字节的
+            # 条件请求。写 no-store 才是真的禁用缓存。
+            "Cache-Control": "no-cache",
+        })
+    return None
+
+
 def _get_or_create_settings(db: Session, owner: str) -> UserSettings:
     """按账号取设置（资金总额、凯利比例……），没有就建一份默认的。
 
@@ -367,8 +475,17 @@ def list_competitions(include_inactive: bool = False, db: Session = Depends(get_
 # ══════════════════════════════════════════════════════════
 
 @app.get("/api/matches")
-def list_matches(status_filter: Optional[str] = None, competition_id: Optional[int] = None,
+def list_matches(request: Request, status_filter: Optional[str] = None,
+                 competition_id: Optional[int] = None,
                  db: Session = Depends(get_db), user: Optional[dict] = AuthDep):
+    # 数据没变就回 304，省掉 4.8 MB 的重复下载（见上面 _data_version 那段）。
+    # 查询参数必须算进指纹：?status_filter=upcoming 只回未来赛程，跟不带参数
+    # 的全量是两份不同的东西，共用一个 ETag 会让客户端拿错。
+    tag = _etag(_data_version(db, _owner_key(user)), "matches", status_filter, competition_id)
+    hit = _conditional(request, tag)
+    if hit:
+        return hit
+
     # 停用赛事的比赛不回给前端。不这么做的话，赛事筛选条上虽然没有它的按钮，
     # 「全部」那个计数里却还包含它的几百场，回测页也照样列出来——等于只藏了
     # 一半，看起来像 bug。数据在库里一条没删，改回 is_active=True 就全回来。
@@ -501,7 +618,8 @@ def list_matches(status_filter: Optional[str] = None, competition_id: Optional[i
                 "fetched_at": mo.fetched_at.isoformat() if mo.fetched_at else None,
             } if mo else None,
         })
-    return out
+    # 带上 ETag，下次客户端就能拿它来问"变了没有"。
+    return JSONResponse(out, headers={"ETag": tag, "Cache-Control": "no-cache"})
 
 
 def _pred_dict(p: Prediction):
@@ -967,7 +1085,8 @@ def delete_withdrawal(withdrawal_id: int, db: Session = Depends(get_db), user: O
 # ══════════════════════════════════════════════════════════
 
 @app.get("/api/backtest-summary")
-def backtest_summary(competition_id: Optional[int] = None, db: Session = Depends(get_db)):
+def backtest_summary(request: Request, competition_id: Optional[int] = None,
+                     db: Session = Depends(get_db)):
     """
     传 competition_id → 返回该赛事的扁平统计（向后兼容旧格式）
     不传 → 返回按赛事拆分的数组，**不做任何跨赛事聚合**
@@ -976,6 +1095,14 @@ def backtest_summary(competition_id: Optional[int] = None, db: Session = Depends
     准确率。把世界杯的 67% 和联赛的准确率平均成一个数字，那个数字哪个都
     不代表。加第二个赛事之前先修掉，而不是等数字已经明显错了才发现。
     """
+    # 体积很小（2 KB）但**耗时不小**：每个赛事各做一次 Prediction join Match
+    # 把全部已赛预测捞进内存再求和，实测 9,500 场的库上 211 ms，是十个接口里
+    # 排第二的。它只依赖比赛和预测，跟账号无关，所以指纹用 owner 无关的那份。
+    tag = _etag(_data_version(db, _LOCAL_OWNER), "backtest", competition_id)
+    hit = _conditional(request, tag)
+    if hit:
+        return hit
+
     def _stats(preds):
         total = len(preds)
         correct = sum(1 for p in preds if p.is_correct)
@@ -987,13 +1114,13 @@ def backtest_summary(competition_id: Optional[int] = None, db: Session = Depends
             Match.status == "played", Match.competition_id == competition_id
         ).all()
         total, correct, avg_rps = _stats(preds)
-        return {
+        return JSONResponse({
             "competition_id": competition_id,
             "total": total, "correct": correct,
             "accuracy": round(correct / total, 4) if total else 0,
             "avg_rps": round(avg_rps, 4),
             "random_baseline_rps": 0.245,
-        }
+        }, headers={"ETag": tag, "Cache-Control": "no-cache"})
 
     by_competition = []
     for comp in db.query(Competition).order_by(Competition.id).all():
@@ -1012,7 +1139,8 @@ def backtest_summary(competition_id: Optional[int] = None, db: Session = Depends
             "avg_rps": round(avg_rps, 4),
         })
 
-    return {"by_competition": by_competition, "random_baseline_rps": 0.245}
+    return JSONResponse({"by_competition": by_competition, "random_baseline_rps": 0.245},
+                        headers={"ETag": tag, "Cache-Control": "no-cache"})
 
 
 # ══════════════════════════════════════════════════════════

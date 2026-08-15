@@ -31,6 +31,13 @@ from app.models import engine                                         # noqa: E4
 from app.main import (submit_odds, submit_odds_bulk,                  # noqa: E402
                       OddsInput, OddsBulkInput)
 
+# 这些脚本跑在开发机那个**已经存在**的 valuebet.db 上，而生产的启动流程
+# （on_startup → init_db）会先把 _SCHEMA_PATCHES 里的新列补进去。不在这里
+# 跑一遍的话，只要模型加了新列，脚本就会以 "no such column" 挂掉——挂的是
+# 脚本的环境，不是被测的代码，很容易误判成"改动把功能改坏了"。
+from app.models import init_db as _init_db                            # noqa: E402
+_init_db()
+
 _sql = []
 
 

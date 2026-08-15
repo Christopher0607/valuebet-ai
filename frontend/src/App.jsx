@@ -69,6 +69,55 @@ async function api(path, opts) {
   return res.json();
 }
 
+// 条件请求版的 api()。
+//
+// 为什么需要它：进网站时前端先用 localStorage 的缓存把界面画出来，然后
+// 后台把十个接口重拉一遍（横幅上「显示的是上次的数据，正在后台更新」
+// 就是这一段）。实测 9,500 场的库，这十个接口一共 4,885 KB，其中
+// /api/matches 一个人占 4,880 KB——而里面 8,550 场是已经踢完、永远不会
+// 再变的历史比赛。等于每次进网站都把同一份历史重新下载一遍，免费档
+// Render + 远端 Postgres 上就是那段肉眼可见的等待。
+//
+// 带上次的 ETag 去问，没变后端回 304（空体），直接复用手上那份。
+// 后端实测：4,880 KB / 1,141 ms → 0 字节 / 14 ms。
+//
+// 拿不到 ETag（跨域没暴露、或者后端还是旧版本）时行为跟以前完全一样——
+// 全量下载，只是没省到，不会出错。
+async function apiConditional(path, etag) {
+  const token = await getToken();
+  const limit = SLOW_PATHS[path] || DEFAULT_TIMEOUT_MS;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), limit);
+  let res;
+  try {
+    res = await fetch(API + path, {
+      signal: ctl.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(etag ? { "If-None-Match": etag } : {}),
+      },
+    });
+  } catch (e) {
+    if (e.name === "AbortError") {
+      const err = new Error(`${path} 超过 ${limit / 1000} 秒没有响应（后端在跑，但没回应）`);
+      err.timeout = true;
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (res.status === 401) {
+    const err = new Error("UNAUTHORIZED");
+    err.unauthorized = true;
+    throw err;
+  }
+  if (res.status === 304) return { notModified: true, etag };
+  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
+  return { data: await res.json(), etag: res.headers.get("ETag") };
+}
+
 // ── Formatting ─────────────────────────────────────────────
 const pct  = v => v == null ? "—" : (v * 100).toFixed(1) + "%";
 const fev  = v => v == null ? "—" : (v >= 0 ? "+" : "") + (v * 100).toFixed(1) + "%";
@@ -249,6 +298,13 @@ function AppInner() {
   const [session, setSession] = useState(null);
   const [authReady, setAuthReady] = useState(!isAuthEnabled);
   const retryRef = useRef(0);
+  // loadAll 是 useCallback([session])，闭包里的 matches / backtestByComp 永远是
+  // 创建那一刻的值。收到 304 需要「沿用当前这份」时必须读到真正的当前值，
+  // 所以额外挂一个 ref 跟着状态走。
+  const latestRef = useRef({ matches: [], backtest: [] });
+
+  useEffect(() => { latestRef.current = { matches, backtest: backtestByComp }; },
+            [matches, backtestByComp]);
 
   // silent：已经用缓存把界面画出来了，这一轮是后台刷新。
   // 不能再翻回加载态——否则缓存刚画出来的内容立刻被 spinner 盖掉，
@@ -257,10 +313,15 @@ function AppInner() {
     if (!silent) setLoading(true);
     setApiError(null);
     try {
-      const [st, all, bt, vb, rb, br, se, cp, pl, wd] = await Promise.all([
+      // /matches 和 /backtest-summary 走条件请求：带上次的 ETag，后端说没变
+      // 就回 304，直接复用手上那份。这两个是十个接口里唯二有分量的
+      // （实测 4,880 KB / 1,141 ms 和 2 KB / 194 ms），其余八个加起来不到 3 KB，
+      // 为它们做条件请求省不到什么，徒增复杂度。
+      const prev = readCache(session?.user?.id || "local");
+      const [st, allR, btR, vb, rb, br, se, cp, pl, wd] = await Promise.all([
         api("/status"),
-        api("/matches"),
-        api("/backtest-summary"),
+        apiConditional("/matches", prev?.etags?.matches),
+        apiConditional("/backtest-summary", prev?.etags?.backtest),
         api("/bets"),
         api("/real-bets"),
         api("/bankroll-summary"),
@@ -275,9 +336,26 @@ function AppInner() {
         api("/parlay-bets"),
         api("/withdrawals"),
       ]);
+
+      // 304 就沿用手上那份。优先用 localStorage 里的，其次用当前 state
+      // （latestRef，不是闭包里的 matches——loadAll 是 useCallback([session])，
+      // 直接读 matches 会读到上一次渲染时的旧值）。
+      // 两个都没有而后端又回 304 属于不该发生的组合（没 ETag 就不会有 304），
+      // 真撞上就保持空数组，下一轮重新拉。
+      const all = allR.notModified
+        ? (prev?.matches ?? latestRef.current.matches)
+        : allR.data;
+      const btComp = btR.notModified
+        ? (prev?.backtest ?? latestRef.current.backtest)
+        : (btR.data.by_competition || []);
+      const etags = {
+        matches: allR.etag ?? prev?.etags?.matches,
+        backtest: btR.etag ?? prev?.etags?.backtest,
+      };
+
       setStatus(st);
       setMatches(all);
-      setBacktestByComp(bt.by_competition || []);
+      setBacktestByComp(btComp);
       setCompetitions(cp || []);
       setBets(vb);
       setRealBets(rb);
@@ -287,8 +365,9 @@ function AppInner() {
       setWithdrawals(wd || []);
       setRefreshFailed(false);          // 这一轮成功了，清掉上一轮的失败标记
       writeCache(session?.user?.id || "local", {
-        status: st, matches: all, backtest: bt.by_competition || [], competitions: cp || [],
+        status: st, matches: all, backtest: btComp, competitions: cp || [],
         bets: vb, realBets: rb, bankroll: br, settings: se, parlayBets: pl || [], withdrawals: wd || [],
+        etags,
       });
     } catch (e) {
       // 刚启动那十几秒后端可能还没就绪（uvicorn 还没绑定端口，或者首次

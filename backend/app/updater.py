@@ -1426,9 +1426,20 @@ def refresh_market_odds(db: Session) -> dict:
         # 是 UTC，而 openfootball 的赛程日期是当地比赛日，晚场会跨 UTC 零点
         # （美洲赛事尤其常见）。放宽到 ±1 天不会配错——同样两支球队两天内
         # 踢两场是不可能的，所以「队名对 + 相差一天内」是唯一的。
+        # 索引的键必须**两边都归一化**。
+        #
+        # 原来这里用的是库里的原始队名 m.team1/m.team2，而下面查表用的是
+        # normalize_team_name(r["team1"])——两边口径不一样，于是凡是"存进库
+        # 的名字本身还不是归一化形式"的球队，永远配不上，静默拿不到市场价。
+        # 实测（2026-08，1,446 场未来比赛）中招 74 场，占 5.1%：
+        #     'RC Deportivo La Coruña'        -> 'Deportivo La Coruña'
+        #     'Real Racing Club de Santander' -> 'Racing Santander'
+        # 界面上看不出任何异常，就是这几场一直没有赔率。
+        # 这是 22 号脚本抓出来的——它喂回去的就是库里的原始队名，正好踩中。
         by_key = {}
         for m in soon:
-            by_key.setdefault((m.team1, m.team2), []).append(m)
+            by_key.setdefault(
+                (normalize_team_name(m.team1), normalize_team_name(m.team2)), []).append(m)
 
         try:
             rows, quota = odds_api.fetch_h2h_odds(comp.code)
