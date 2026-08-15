@@ -134,6 +134,33 @@ def legacy_suggest_parlays(match_odds_list, min_legs, max_legs, fraction, cap, t
     }
 
 
+def _norm(res):
+    """比对前把 joint_probability 统一舍到 4 位。
+
+    这是**唯一**一个被刻意改过的字段：原来新旧两版都返回 round(joint_prob, 4)，
+    后来发现 4 位不够——返回的三个数自己乘不出来（p 舍掉的那点误差被几百倍
+    的联合赔率放大，算出的 EV 跟返回的 ev 差 0.007），而推荐卡片现在支持
+    就地改单腿赔率、当场重算，这个不一致会表现为「一开输入框数字自己跳一下」。
+    所以现版本改成 round(joint_prob, 8)。
+
+    这个脚本要守的是另一件事：那次**性能重构**没有改变推荐结果、排序、
+    并列先后和标签。精度调整跟那次重构无关，所以比对时把这一个字段拉回
+    同一精度，其余字段仍然逐字节比。不这么做的话，这个脚本会因为一次
+    与它无关的、故意的改动而永远红着。
+    """
+    if not isinstance(res, dict):
+        return res
+    out = dict(res)
+    combos = out.get("combinations")
+    if isinstance(combos, list):
+        out["combinations"] = [
+            {**c, "joint_probability": round(c["joint_probability"], 4)}
+            if isinstance(c, dict) and "joint_probability" in c else c
+            for c in combos
+        ]
+    return out
+
+
 def make_matches(n, seed, margin, identical_odds=False):
     """造一批比赛。identical_odds=True 是**故意**制造大量并列——
     并列正是「排序稳定性变了就会露馅」的地方，必须专门测。"""
@@ -183,8 +210,8 @@ def main():
         new = suggest_parlays(ms, lo, hi, 0.25, 0.05, top_n=5)
         t_new += time.time() - t
         statuses[old["status"]] = statuses.get(old["status"], 0) + 1
-        so = json.dumps(old, ensure_ascii=False, sort_keys=True)
-        sn = json.dumps(new, ensure_ascii=False, sort_keys=True)
+        so = json.dumps(_norm(old), ensure_ascii=False, sort_keys=True)
+        sn = json.dumps(_norm(new), ensure_ascii=False, sort_keys=True)
         if so != sn:
             mismatch.append((n, margin, seed, ident, lo, hi))
 

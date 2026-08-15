@@ -2302,6 +2302,69 @@ const EXPOSURE_WARN_PCT = 25;
 const EXPOSURE_DANGER_PCT = 40;
 const exposureColor = p => p >= EXPOSURE_DANGER_PCT ? C.red : p >= EXPOSURE_WARN_PCT ? C.gold : C.textDim;
 
+// ── 推荐结果里改单腿赔率之后，三个数字怎么重算 ──────────────────
+//
+// 为什么要在前端算：推荐是按「搜索那一刻系统库里的赔率」出的，而你真正
+// 在平台上看到的价随时在动。价一变，联合赔率、EV、凯利建议全都跟着变，
+// 但联合概率**不变**——概率是模型给的，跟价格无关。
+//
+// 这一点是这个项目的硬约束，不是风格问题：EV = 模型概率 × 市场原始赔率 - 1。
+// 改赔率只动式子里「赔率」那一半，绝不能反过来用赔率去推概率——那样算出来
+// 的 EV 恒等于负的抽水，是循环论证，没有任何信息（见 CLAUDE.md）。
+//
+// 下面两个函数跟后端 model.py 的 kelly_pct / expected_value / suggest_parlays
+// 逐字对应，连 round 的位数都一样（combined_odds 3 位、ev 4 位、kelly_pct
+// 4 位、kelly_amount 2 位）。对齐不是为了好看：没改过赔率时，前端重算出来
+// 的必须跟后端原样返回的**完全相等**，否则用户一点开输入框，数字就自己
+// 跳一下，看起来像 bug。这条有回归脚本盯着。
+function parlayKellyPct(prob, odds, fraction, cap) {
+  const b = odds - 1;
+  if (b <= 0) return 0;
+  const full = (prob * b - (1 - prob)) / b;
+  return Math.max(0, Math.min(full * fraction, cap));
+}
+
+const round = (v, n) => {
+  // JS 的 Math.round 对负数是向上取整（-0.5 → -0）而 Python 的 round 是
+  // 银行家舍入，两边不可能逐位一致。这里用 toFixed 再转回数字，够用且
+  // 跟后端在这些量级上一致；EV 可能是负数，所以必须走同一条路径。
+  const r = Number(Number(v).toFixed(n));
+  return Object.is(r, -0) ? 0 : r;
+};
+
+function recomputeCombo(combo, legOdds, settings) {
+  const list = combo.legs.map((leg, j) => {
+    const raw = legOdds?.[j];
+    const v = raw === undefined || raw === "" ? null : parseFloat(raw);
+    // 填了但不是个有效数字（比如只打了一个小数点）就退回原价，不要把
+    // 整张卡片算成 NaN——输入过程中每一帧都要是可读的。
+    return Number.isFinite(v) && v > 1 ? v : leg.odds;
+  });
+  const edited = list.some((v, j) => v !== combo.legs[j].odds);
+  const combinedOdds = round(list.reduce((a, b) => a * b, 1), 3);
+  const p = combo.joint_probability;
+  const ev = round(p * combinedOdds - 1, 4);
+  // 兜底值跟后端 UserSettings 的列默认值一致（0.5 / 0.15 / 10000）。
+  // 正常情况下 /api/settings 三个字段都在，但这份 settings 也可能来自
+  // 一份旧的 localStorage 缓存；缺一个就会把整张卡片算成 NaN，
+  // 而 NaN 在界面上是"—"，看起来像功能坏了。
+  const frac = Number.isFinite(+settings?.kelly_fraction) ? +settings.kelly_fraction : 0.5;
+  const cap = Number.isFinite(+settings?.max_bet_pct) ? +settings.max_bet_pct : 0.15;
+  const bank = Number.isFinite(+settings?.bankroll_total) ? +settings.bankroll_total : 10000;
+  const kPct = round(parlayKellyPct(p, combinedOdds, frac, cap), 4);
+  return {
+    list, edited, combinedOdds, ev,
+    kellyPct: kPct,
+    kellyAmount: round(kPct * bank, 2),
+    // 单腿自己是不是还正 EV。推荐时每条腿都是正的（负 EV 的腿根本不进
+    // 候选池），改完价可能就不是了——那这一腿是在往下拖整张票，
+    // 而不是"少赚一点"。
+    negativeLegs: combo.legs
+      .map((leg, j) => ({ j, leg, ev: round(leg.prob * list[j] - 1, 4) }))
+      .filter(x => x.ev <= 0),
+  };
+}
+
 function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRefresh }) {
   const zhTeam = useZhTeam();
   const [selected, setSelected] = useState({});   // { matchId: true }
@@ -2340,6 +2403,10 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
   const [realStake, setRealStake] = useState({});
   const [realOdds, setRealOdds] = useState({});
   const [showRealForm, setShowRealForm] = useState(null);
+  // 推荐卡片里被手动改过的单腿赔率：{ 组合序号: { 腿序号: "2.15" } }。
+  // 按组合序号存而不是按 match_id：同一场比赛可能出现在好几个推荐组合里，
+  // 而你在平台上是一张票一张票下的，改这张的价不该悄悄改掉另一张。
+  const [legOdds, setLegOdds] = useState({});
 
   const selectedIds = Object.keys(selected).filter(id => selected[id]).map(Number);
 
@@ -2533,17 +2600,22 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
     const key = `${kind}-${comboIdx}`;
     setRecording(key);
     try {
+      // 改过单腿赔率就一律以改后的为准——记账要记你**真正下到的那个价**，
+      // 不是搜索那一刻系统库里的价。没改过时 r 跟后端返回的完全一致。
+      const r = recomputeCombo(combo, legOdds[comboIdx], settings);
       const stake = kind === "real"
         ? parseFloat(realStake[comboIdx] || "")
-        : Math.round(combo.kelly_amount || 0);
+        : Math.round(r.kellyAmount || 0);
       if (!stake || stake <= 0) {
         setError(kind === "real" ? "请填写真实下注金额" : "凯利建议金额为0，不适合下注");
         setRecording(null);
         return;
       }
+      // 总赔率的优先级：实盘表单里手填的 > 各腿（含改过的）相乘。
+      // 平台的串关定价不一定等于乘积，手填的那个才是账面真值。
       const oddsOverride = kind === "real" && realOdds[comboIdx]
         ? parseFloat(realOdds[comboIdx])
-        : combo.combined_odds;
+        : r.combinedOdds;
 
       await api("/parlay-bets", {
         method: "POST",
@@ -2551,12 +2623,12 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
           kind,
           stake,
           odds_used: oddsOverride,
-          joint_probability: combo.joint_probability,
-          ev_at_bet: combo.ev,
-          kelly_pct: combo.kelly_pct,
-          legs: combo.legs.map(l => ({
+          joint_probability: combo.joint_probability,   // 概率是模型给的，跟价格无关
+          ev_at_bet: r.ev,
+          kelly_pct: r.kellyPct,
+          legs: combo.legs.map((l, j) => ({
             match_id: l.match_id, outcome: l.outcome,
-            odds: l.odds, prob: l.prob,
+            odds: r.list[j], prob: l.prob,
           })),
         }),
       });
@@ -2735,6 +2807,13 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
           <SL>推荐组合（共评估 {result.n_combinations_evaluated} 种组合，{result.n_candidates} 条候选正EV腿）</SL>
           {result.combinations.map((combo, i) => {
             const dupKinds = betSignatures.get(legSetSignature(combo.legs));
+            // 单腿赔率改过就按改后的重算。没改过时这三个数跟后端返回的
+            // 完全相等（回归脚本盯着这一点），所以可以无条件用 r 渲染，
+            // 不需要"有没有改过"两套分支。
+            const r = recomputeCombo(combo, legOdds[i], settings);
+            const setLeg = (j, v) => setLegOdds(o => ({
+              ...o, [i]: { ...(o[i] || {}), [j]: v },
+            }));
             return (
             <div key={i} style={{ background: C.card, border: `1px solid ${dupKinds ? C.gold + "88" : combo.tag ? C.accent + "66" : C.border}`, borderRadius: 10, marginBottom: 10, padding: "12px 14px" }}>
               {dupKinds && (
@@ -2746,31 +2825,93 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
                 <div style={{ fontSize: 11, fontWeight: 800, color: C.accent, marginBottom: 8 }}>{combo.tag}</div>
               )}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(90px, 1fr))", gap: 10, marginBottom: 10 }}>
+                {/* 联合概率不带 sub：它是模型算的，改赔率不会让它动一分一毫。
+                    另外三个都跟着改后的价走。 */}
                 <MiniStat label="联合概率" val={pct(combo.joint_probability)} color={C.blue} />
-                <MiniStat label="联合赔率" val={combo.combined_odds.toFixed(2)} color={C.text} />
-                <MiniStat label="EV" val={fev(combo.ev)} color={evc(combo.ev)} />
+                <MiniStat label="联合赔率" val={r.combinedOdds.toFixed(2)} color={r.edited ? C.gold : C.text}
+                          sub={r.edited ? `原 ${combo.combined_odds.toFixed(2)}` : null} />
+                <MiniStat label="EV" val={fev(r.ev)} color={evc(r.ev)}
+                          sub={r.edited ? `原 ${fev(combo.ev)}` : null} />
                 {/* 标签跟着设置里的凯利比例走。之前这里写死成「半凯利建议」，
                     但金额其实一直是按设置算的——所以你把设置改成四分之一凯利时，
                     数字变了、标签没变，看起来像「只会推荐半凯利」。 */}
-                <MiniStat label={`${kellyLabel} 建议`} val={combo.kelly_amount ? combo.kelly_amount.toLocaleString() : "0"} color={C.purple} sub={pct(combo.kelly_pct)} />
+                <MiniStat label={`${kellyLabel} 建议`} val={r.kellyAmount ? r.kellyAmount.toLocaleString() : "0"}
+                          color={C.purple}
+                          sub={r.edited ? `${pct(r.kellyPct)} · 原 ${Math.round(combo.kelly_amount || 0).toLocaleString()}`
+                                        : pct(r.kellyPct)} />
               </div>
               <div style={{ fontSize: 10, color: C.textDim, marginBottom: 8 }}>
                 相对最弱一腿（{legDisplay(combo.weakest_leg_match_id, combo.weakest_leg_outcome) || combo.weakest_leg_label} {pct(combo.weakest_leg_prob)}）命中率打了 {(combo.risk_ratio_vs_weakest_leg * 10).toFixed(1)} 折
               </div>
+              {/* 每条腿的赔率都可以就地改。
+                  推荐是按「搜索那一刻库里的价」出的，而你在平台上看到的价随时在动，
+                  两边对不上的话，卡片上的 EV 和凯利建议就都是照着一个你拿不到的价算的。
+                  改完上面四个数字立刻跟着变，记账也按改后的价记。
+                  概率那一栏是模型给的，不会因为改价而变——EV 只有「赔率」这一半会动。 */}
               <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
-                {combo.legs.map((leg, j) => (
-                  <div key={j} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, background: C.bg, borderRadius: 6, padding: "6px 9px" }}>
-                    <span>{legDisplay(leg.match_id, leg.outcome) || leg.label}</span>
-                    <span style={{ color: C.textDim }}>@{leg.odds} · {pct(leg.prob)}</span>
-                  </div>
-                ))}
+                {combo.legs.map((leg, j) => {
+                  const cur = r.list[j];
+                  const legEdited = cur !== leg.odds;
+                  const legEv = leg.prob * cur - 1;
+                  return (
+                    <div key={j} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11,
+                                          background: C.bg, borderRadius: 6, padding: "6px 9px" }}>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        {legDisplay(leg.match_id, leg.outcome) || leg.label}
+                      </span>
+                      <span style={{ color: C.textDim, whiteSpace: "nowrap" }}>{pct(leg.prob)}</span>
+                      <span style={{ color: evc(legEv), whiteSpace: "nowrap", width: 46, textAlign: "right",
+                                     fontVariantNumeric: "tabular-nums" }}>
+                        {fev(legEv)}
+                      </span>
+                      <input
+                        type="number" step="0.01" inputMode="decimal"
+                        aria-label="单腿赔率"
+                        value={legOdds[i]?.[j] ?? String(leg.odds)}
+                        onChange={e => setLeg(j, e.target.value)}
+                        style={{ width: 62, background: C.card,
+                                 border: `1px solid ${legEdited ? C.gold : C.border}`,
+                                 borderRadius: 5, padding: "4px 6px",
+                                 color: legEdited ? C.gold : C.text,
+                                 fontSize: 13, fontWeight: 700, textAlign: "right" }}
+                      />
+                    </div>
+                  );
+                })}
               </div>
+
+              {r.edited && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10,
+                              fontSize: 10.5, color: C.gold, lineHeight: 1.6 }}>
+                  <span style={{ flex: 1 }}>
+                    已按你填的价重算。原推荐是 @{combo.legs.map(l => l.odds).join(" × ")}
+                    {r.ev <= 0 && (
+                      <strong style={{ color: C.red }}>
+                        {" "}· 按这个价整张票已经是负 EV（{fev(r.ev)}），下了长期是亏的
+                      </strong>
+                    )}
+                    {r.ev > 0 && r.negativeLegs.length > 0 && (
+                      <span style={{ color: C.red }}>
+                        {" "}· 其中 {r.negativeLegs.length} 条腿自己已经转负，
+                        它在往下拖整张票（独立事件下 EV 是各腿相乘）
+                      </span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setLegOdds(o => ({ ...o, [i]: {} }))}
+                    style={{ border: `1px solid ${C.gold}66`, background: "transparent", color: C.gold,
+                             borderRadius: 5, padding: "3px 9px", fontSize: 10, whiteSpace: "nowrap" }}>
+                    复原
+                  </button>
+                </div>
+              )}
 
               {/* 下这一注之后集中度会变成多少。金额优先用实盘表单里已经填的，
                   没填就按凯利建议试算——这样还没展开实盘表单时也看得到。
                   只在超过提醒线时才显示，平时不占地方也不制造噪音。 */}
               {(() => {
-                const stake = +realStake[i] || combo.kelly_amount || 0;
+                const stake = +realStake[i] || r.kellyAmount || 0;
                 const w = stake > 0 ? projectExposure(combo, stake) : null;
                 if (!w || w.pct < EXPOSURE_WARN_PCT) return null;
                 const c = exposureColor(w.pct);
@@ -2794,7 +2935,7 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
                   disabled={recording === `virtual-${i}` || recorded === `virtual-${i}`}
                   style={{ flex: 1, padding: "9px 4px", borderRadius: 6, border: "none", background: C.blue, color: "#fff", fontWeight: 700, fontSize: 12 }}
                 >
-                  {recorded === `virtual-${i}` ? "✓ 已记录" : recording === `virtual-${i}` ? "..." : `记虚拟盘（${Math.round(combo.kelly_amount || 0).toLocaleString()}）`}
+                  {recorded === `virtual-${i}` ? "✓ 已记录" : recording === `virtual-${i}` ? "..." : `记虚拟盘（${Math.round(r.kellyAmount || 0).toLocaleString()}）`}
                 </button>
                 <button
                   onClick={() => setShowRealForm(showRealForm === i ? null : i)}
@@ -2807,18 +2948,19 @@ function ParlaySuggestTab({ upcoming, settings, parlayBets, realBets = [], onRef
               {showRealForm === i && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
                   <div style={{ fontSize: 10, color: C.textDim, marginBottom: 6 }}>
-                    填你在平台实际下的金额和拿到的总赔率。总赔率不填就用各腿相乘（{combo.combined_odds.toFixed(2)}）——
+                    填你在平台实际下的金额和拿到的总赔率。总赔率不填就用各腿相乘（{r.combinedOdds.toFixed(2)}
+                    {r.edited ? "，已按你改过的单腿价算" : ""}）——
                     但平台的串关定价不一定等于乘积，填真实值账面才准。
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 6 }}>
                     <input
-                      type="number" inputMode="decimal" placeholder={`金额（建议 ${Math.round(combo.kelly_amount || 0)}）`}
+                      type="number" inputMode="decimal" placeholder={`金额（建议 ${Math.round(r.kellyAmount || 0)}）`}
                       value={realStake[i] || ""}
                       onChange={e => setRealStake(s => ({ ...s, [i]: e.target.value }))}
                       style={{ background: C.bg, border: `1px solid ${C.purple}66`, borderRadius: 6, padding: "9px 8px", color: C.text, fontSize: 16 }}
                     />
                     <input
-                      type="number" step="0.01" inputMode="decimal" placeholder={`总赔率 ${combo.combined_odds.toFixed(2)}`}
+                      type="number" step="0.01" inputMode="decimal" placeholder={`总赔率 ${r.combinedOdds.toFixed(2)}`}
                       value={realOdds[i] || ""}
                       onChange={e => setRealOdds(s => ({ ...s, [i]: e.target.value }))}
                       style={{ background: C.bg, border: `1px solid ${C.purple}66`, borderRadius: 6, padding: "9px 8px", color: C.text, fontSize: 16 }}

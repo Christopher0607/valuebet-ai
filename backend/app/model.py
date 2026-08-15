@@ -630,7 +630,19 @@ def suggest_parlays(match_odds_list: list, min_legs: int, max_legs: int,
             "legs": [{"label": l["label"], "outcome": l["outcome"], "odds": l["odds"],
                       "prob": l["prob"], "match_id": l["match_id"]} for l in combo],
             "n_legs": k,
-            "joint_probability": jp_r,
+            # 概率给 8 位，不是 4 位。
+            #
+            # 4 位的时候，返回的这三个数**自己乘不出来**：5 腿串关的联合概率
+            # 是 0.0362、联合赔率 245.03，前端拿这两个数按 EV = p×赔率-1 一算
+            # 得 +786.99%，而这里返回的 ev 是 +786.3%（它是用未舍入的 joint_prob
+            # 算的）。p 舍到 4 位的那点误差被 245 倍的赔率放大了。
+            #
+            # 以前看不出来是因为前端只显示、不重算。现在推荐卡片支持就地改
+            # 单腿赔率并当场重算，一开输入框数字就会自己跳一下——所以这里
+            # 必须给够精度。8 位在 245 倍赔率下的 EV 误差是 1.2e-6，远小于
+            # 显示用的 4 位。
+            # 界面显示走 pct()，只保留一位小数，多出来的位数不会出现在屏幕上。
+            "joint_probability": round(joint_prob, 8),
             "combined_odds": co_r,
             "ev": ev_r,
             "kelly_pct": round(kelly_pct(joint_prob, combined_odds, fraction, cap), 4),

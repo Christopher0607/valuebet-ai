@@ -100,7 +100,7 @@ const container = dom.window.document.getElementById("root");
 const root = createRoot(container);
 act(() => {
   root.render(React.createElement(ParlaySuggestTab, {
-    upcoming, settings: { bankroll_total: 1000, kelly_fraction: 0.5 },
+    upcoming, settings: { bankroll_total: 10000, kelly_fraction: 0.5, max_bet_pct: 0.15 },
     parlayBets: [], realBets: [], onRefresh: () => {},
   }));
 });
@@ -194,6 +194,134 @@ check("每天按钮都变「取消」", dayChips().every(c => c.textContent === 
 click(dayChips()[2]);
 check("取消第 3 天后 = 8", selectedCount() === 8, `实际 ${selectedCount()}`);
 
+
+// ── 3b. 推荐卡片里改单腿赔率 ─────────────────────────────────────
+// 31 号验的是"算得对不对"，这里验的是"接得上没有"：
+// 输入框敲进去的价，有没有真的走到界面上那三个数字、以及走到记账的请求体里。
+// 记账那一条尤其重要——界面显示改后的价、请求体却发原价，是那种
+// 界面上完全看不出来、只有对账时才发现的错。
+console.log("\n推荐卡片：改单腿赔率\n");
+
+const COMBO = {
+  legs: [
+    { label: "A win", outcome: "home", odds: 2.0, prob: 0.55, match_id: upcoming[0].id },
+    { label: "B win", outcome: "away", odds: 3.0, prob: 0.40, match_id: upcoming[1].id },
+  ],
+  n_legs: 2,
+  joint_probability: 0.22,
+  combined_odds: 6.0,
+  ev: 0.32,                       // 0.22 × 6.0 - 1
+  kelly_pct: 0.032,
+  kelly_amount: 320,
+  weakest_leg_label: "B win", weakest_leg_match_id: upcoming[1].id,
+  weakest_leg_outcome: "away", weakest_leg_prob: 0.40,
+  risk_ratio_vs_weakest_leg: 0.55,
+};
+const SUGGEST = {
+  status: "ok", n_combinations_evaluated: 12, n_candidates: 4, combinations: [COMBO],
+};
+
+const posted = [];
+globalThis.fetch = async (url, opts = {}) => {
+  const u = String(url);
+  if (u.endsWith("/parlay/suggest")) {
+    return { ok: true, status: 200, headers: new dom.window.Headers(),
+             json: async () => SUGGEST };
+  }
+  if (u.endsWith("/parlay-bets")) {
+    posted.push(JSON.parse(opts.body));
+    return { ok: true, status: 200, headers: new dom.window.Headers(),
+             json: async () => ({ id: 1 }) };
+  }
+  throw new Error("测试里没预期到的请求: " + u);
+};
+
+const flush = async () => { await act(async () => { await new Promise(r => setTimeout(r, 0)); }); };
+
+// 选两场，跑一次搜索
+click(dayChips()[0]);
+const genBtn = $$("button").find(b => /生成推荐组合|搜索/.test(b.textContent));
+check("找得到搜索按钮", !!genBtn);
+await flush();
+act(() => { genBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+await flush();
+check("推荐结果渲染出来了", /推荐组合/.test(text()));
+
+/** 卡片上的四个统计值 */
+function stats() {
+  const t = text();
+  const g = re => (t.match(re) || [])[1];
+  return { odds: g(/联合赔率([\d.]+)/), ev: g(/EV([+\-][\d.]+%)/),
+           kelly: g(/建议([\d,]+)/) };
+}
+const before = stats();
+check(`初始联合赔率 6.00（实际 ${before.odds}）`, before.odds === "6.00");
+check(`初始 EV +32.0%（实际 ${before.ev}）`, before.ev === "+32.0%");
+
+// 把第一腿从 2.0 改成 1.50 → 联合赔率 4.50，EV = 0.22×4.5-1 = -0.01
+const legInputs = $$('input[aria-label="单腿赔率"]');
+check(`两条腿各有一个赔率输入框（实际 ${legInputs.length} 个）`, legInputs.length === 2);
+check("输入框预填的是原价", legInputs[0].value === "2" || legInputs[0].value === "2.0");
+act(() => {
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set;
+  setter.call(legInputs[0], "1.50");
+  legInputs[0].dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+});
+const after = stats();
+check(`联合赔率跟着变成 4.50（实际 ${after.odds}）`, after.odds === "4.50");
+check(`EV 跟着变成 -1.0%（实际 ${after.ev}）`, after.ev === "-1.0%");
+check("EV 转负后有明确提示", /负 EV/.test(text()));
+check("显示了原值供对照", /原 6\.00/.test(text()));
+// 不从统计格里正则取凯利值：那一格的主值和副值是相邻的两个 DOM 节点，
+// textContent 会把它们拼成 "00.0% · 原 320"，正则取到的是 "00"。
+// 「记虚拟盘（N）」按钮上的金额是同一个数，且没有歧义。
+const vAmt = ($$("button").find(b => /记虚拟盘/.test(b.textContent))?.textContent || "")
+  .match(/记虚拟盘（([\d,]+)）/)?.[1];
+check(`凯利建议归零（负 EV 不该推荐下注），按钮显示 ${vAmt}`, vAmt === "0");
+
+// 记一笔虚拟盘，检查请求体里是改后的价
+const vbtn = $$("button").find(b => /记虚拟盘/.test(b.textContent));
+await act(async () => {
+  vbtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await new Promise(r => setTimeout(r, 0));
+});
+// EV 已经是负的、凯利为 0，按设计这一注根本记不下去——这本身就是要的行为
+check("负 EV 时点记虚拟盘不会真的记进去", posted.length === 0,
+      `却发出了 ${posted.length} 个请求：${JSON.stringify(posted[0] || null).slice(0, 200)}`);
+
+// 改成一个更高的价，让它重新变成正 EV，再记一次
+act(() => {
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set;
+  setter.call(legInputs[0], "2.50");
+  legInputs[0].dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+});
+check(`抬价后联合赔率 7.50（实际 ${stats().odds}）`, stats().odds === "7.50");
+const vbtn2 = $$("button").find(b => /记虚拟盘/.test(b.textContent));
+await act(async () => {
+  vbtn2.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await new Promise(r => setTimeout(r, 0));
+});
+check("这次记进去了", posted.length === 1, `实际 ${posted.length} 个请求`);
+if (posted.length === 1) {
+  const body = posted[0];
+  check("请求体里第一腿是改后的 2.5，不是原来的 2.0",
+        body.legs[0].odds === 2.5, `实际 ${body.legs[0].odds}`);
+  check("没改的第二腿保持 3.0", body.legs[1].odds === 3.0, `实际 ${body.legs[1].odds}`);
+  check("总赔率是改后的乘积 7.5", body.odds_used === 7.5, `实际 ${body.odds_used}`);
+  check("ev_at_bet 是重算后的 0.65（0.22×7.5-1）",
+        Math.abs(body.ev_at_bet - 0.65) < 1e-9, `实际 ${body.ev_at_bet}`);
+  check("联合概率原样透传，没被赔率带着变",
+        body.joint_probability === COMBO.joint_probability, `实际 ${body.joint_probability}`);
+}
+
+// 复原
+const undo = $$("button").find(b => b.textContent === "复原");
+check("有「复原」按钮", !!undo);
+if (undo) {
+  click(undo);
+  check(`复原后回到 6.00（实际 ${stats().odds}）`, stats().odds === "6.00");
+  check("复原后不再显示「原 …」对照", !/原 6\.00/.test(text()));
+}
 
 // ── 4. 状态条：更新失败的详情不再挂在首页上 ──────────────────────
 // 用户的原话是「不影响我下注，但影响我美观」。信息本身没删——
