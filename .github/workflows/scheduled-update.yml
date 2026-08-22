@@ -1,0 +1,74 @@
+# 云端的定时更新。
+#
+# 为什么不能靠后端自己的定时任务：backend/app/scheduler.py 里那个
+# IntervalTrigger(hours=12) 是进程内的，只有同一个进程连续活满 12 小时
+# 才会触发。Render 免费档闲置 15 分钟就休眠，进程几乎不可能活那么久，
+# 所以它实际上从来没触发过——真实后果是界面上「上次更新」停在四天前。
+#
+# 这个工作流就是那个缺失的外部时钟。
+#
+# 需要在仓库 Settings → Secrets and variables → Actions 里配两个：
+#   CRON_SECRET  —— 一个随机长字符串，要跟 Render 环境变量里的同名值一致
+#   BACKEND_URL  —— 后端根地址，例如 https://valuebet-ai-1.onrender.com
+#                   （不要带结尾斜杠，也不要带 /api）
+#
+# 两点已知的脾气，别当成故障：
+#   · GitHub 的定时是**尽力而为**，延迟几分钟到几十分钟很常见。12 小时的
+#     节奏完全不受影响，但别指望它准点。
+#   · 仓库连续 60 天没有任何提交，GitHub 会自动停用定时工作流。
+
+name: 定时更新数据
+
+on:
+  schedule:
+    # UTC。对应马来西亚时间（UTC+8）每天 10:00 和 22:00。
+    # 一天两次 —— 正是 DEPLOY.md 估算 The Odds API 免费额度
+    # （500 次/月）时用的频率，再密就会打爆配额。
+    - cron: "0 2,14 * * *"
+  workflow_dispatch:        # 手动触发，用来验证配置对不对
+
+# 同一时间只跑一个，迟到的那次不排队等（后端自己也有闸门，这里只是省事）
+concurrency:
+  group: scheduled-update
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 叫后端跑一轮更新
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BACKEND_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::BACKEND_URL 或 CRON_SECRET 没配。"
+            echo "去仓库 Settings → Secrets and variables → Actions 里加上，"
+            echo "CRON_SECRET 要跟 Render 环境变量里的同名值一致。"
+            exit 1
+          fi
+
+          # --max-time 120：Render 免费档休眠后冷启动要约 50 秒，这个请求
+          # 多半是当天第一个把实例叫醒的。接口本身是立刻返回 202 的
+          # （更新在后端的后台线程里跑），所以这个时间几乎全花在唤醒上。
+          # -sS 静默但保留错误；--retry 3 只对连接层失败重试，不会重复触发
+          # 更新（真触发了的话后端的闸门也会挡掉第二次）。
+          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
+                      --max-time 120 --retry 3 --retry-connrefused \
+                      -X POST "${BACKEND_URL%/}/api/cron/update" \
+                      -H "X-Cron-Key: ${CRON_SECRET}")
+
+          echo "HTTP $code"
+          # 响应体里不含密钥，可以安全打印；出问题时这行就是唯一的线索
+          cat /tmp/resp.json; echo
+
+          case "$code" in
+            202) echo "✅ 更新已启动（在后端后台跑，这里不等它跑完）" ;;
+            200) echo "ℹ️ 后端说距上次更新还不到 12 小时，这次跳过 —— 正常" ;;
+            409) echo "ℹ️ 已经有一轮更新在跑 —— 正常" ;;
+            403) echo "::error::CRON_SECRET 跟后端对不上。两边要是同一个值。"; exit 1 ;;
+            503) echo "::error::后端没配 CRON_SECRET 环境变量，接口是禁用的。"; exit 1 ;;
+            *)   echo "::error::后端返回 $code"; exit 1 ;;
+          esac

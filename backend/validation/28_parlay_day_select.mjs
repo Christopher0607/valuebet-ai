@@ -28,7 +28,7 @@ const { JSDOM } = await import(path.join(NM, "jsdom", "lib", "api.js"));
 // 影子入口：读源码 + 追加一行 export。源码本身一个字都不改。
 const src = fs.readFileSync(APP, "utf8");
 const SHADOW = path.join(FRONTEND, "src", ".__test_app_entry.jsx");
-fs.writeFileSync(SHADOW, src + "\nexport { ParlaySuggestTab, DayGroups, StatusBanner };\n");
+fs.writeFileSync(SHADOW, src + "\nexport { ParlaySuggestTab, DayGroups, StatusBanner, C };\n");
 
 // auth / recharts 在 node 里跑不起来也用不到，用桩替掉。
 const stub = {
@@ -76,7 +76,15 @@ globalThis.localStorage = dom.window.localStorage;
 const React = (await import(path.join(NM, "react", "index.js"))).default;
 const { createRoot } = await import(path.join(NM, "react-dom", "client.js"));
 const { act } = React;   // react-dom/test-utils 的 act 在 18.3 起已弃用
-const { ParlaySuggestTab, StatusBanner } = await import(OUT);
+const { ParlaySuggestTab, StatusBanner, C } = await import(OUT);
+// jsdom 会把 style 属性里的 #f0b429 规范化成 rgb(240, 180, 41)，所以拿
+// 十六进制去比永远不中。从 App.jsx 里读颜色（不在测试里写死一份免得漂移），
+// 再转成 jsdom 那个写法来比。
+const toRgb = hex => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+};
+const C_GOLD = toRgb(C.gold), C_RED = toRgb(C.red);
 
 // 三天的赛程，每天场次不同；全部带 market_odds，所以全都进 withOdds 候选池。
 const DAYS = ["2026-08-15", "2026-08-16", "2026-08-17"];
@@ -372,6 +380,47 @@ for (const sev of ["error", "warning"]) {
   check(`severity=${sev} 时「上次更新」还在`, t.includes("上次更新"), `实际：${t}`);
   check(`severity=${sev} 时「立即更新」按钮还在`, t.includes("立即更新"), `实际：${t}`);
 }
+
+// ── 5. 数据过期要在状态条上看得见 ────────────────────────────────
+// 起因：界面上只有「上次更新 8月18日 下午03:22」一个日期，而当天是 8月22日。
+// 数据落后四天，但除非盯着那个日期算一下，否则完全看不出来——用户就是这么
+// 发现问题的。根因（进程内定时任务在会休眠的免费实例上从没触发）已经修了，
+// 这一节守的是「万一再出问题，得让人立刻发现」。
+console.log("\n数据过期标记\n");
+
+function bannerAt(hoursAgo) {
+  const iso = new Date(Date.now() - hoursAgo * 3600000).toISOString();
+  act(() => {
+    sbRoot.render(React.createElement(StatusBanner, {
+      status: {
+        last_update: iso, last_status: "ok", last_severity: "ok",
+        last_status_label: "更新成功", last_detail: null, update_running: false,
+      },
+      updating: false, onUpdateNow: () => {}, refreshing: false, refreshFailed: false,
+    }));
+  });
+  return sbHost;
+}
+
+check("2 小时前 → 不提过期", !/已过期/.test(bannerAt(2).textContent));
+check("13 小时前 → 还不提（GitHub 定时会迟到，门槛卡 12 会天天误报）",
+      !/已过期/.test(bannerAt(13).textContent));
+check("20 小时前 → 提示「已过期 20 小时」",
+      /数据已过期 20 小时/.test(bannerAt(20).textContent),
+      bannerAt(20).textContent);
+check("20 小时用的是提醒色（金色）不是危险色",
+      (bannerAt(20).querySelector("strong")?.getAttribute("style") || "").includes(C_GOLD),
+      bannerAt(20).querySelector("strong")?.getAttribute("style"));
+check("40 小时前 → 危险色（红）",
+      (bannerAt(40).querySelector("strong")?.getAttribute("style") || "").includes(C_RED),
+      bannerAt(40).querySelector("strong")?.getAttribute("style"));
+// 用户实际遇到的那一次：8月18日 15:22 → 8月22日 13:43，约 94 小时
+check("94 小时（用户遇到的那次）说「4 天」而不是「94 小时」",
+      /数据已过期 3 天|数据已过期 4 天/.test(bannerAt(94).textContent),
+      bannerAt(94).textContent);
+check("过期时「上次更新」那个时间还在（要能看出到底停在哪一刻）",
+      /上次更新/.test(bannerAt(94).textContent));
+check("过期时「立即更新」按钮还在", /立即更新/.test(bannerAt(94).textContent));
 
 fs.unlinkSync(OUT);
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);

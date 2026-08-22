@@ -26,7 +26,10 @@ const API = import.meta.env.VITE_API_BASE
 // 上冷启动后的第一次请求实测要十几秒，给到三倍余量。串关搜索单独放宽到
 // 120 秒——它本来就要评估二十多万个组合，免费档 CPU 慢，正常也要几十秒。
 const DEFAULT_TIMEOUT_MS = 45000;
-const SLOW_PATHS = { "/parlay/suggest": 120000, "/update-now": 120000 };
+// /update-now 现在是立刻回 202 的（真正的更新在后端后台线程里跑），所以
+// 它不再需要 120 秒。留 90 秒是给 Render 免费档的冷启动——休眠后第一个
+// 请求要等实例被叫醒，约 50 秒。
+const SLOW_PATHS = { "/parlay/suggest": 120000, "/update-now": 90000 };
 
 async function api(path, opts) {
   // 启用认证时每个请求都要带令牌。getToken 会在令牌快过期时自动续期，
@@ -498,10 +501,35 @@ function AppInner() {
     } catch { /* localStorage 不可用（隐私模式等）就不自动弹，不影响使用 */ }
   }, []);
 
+  // 「立即更新」。
+  //
+  // 以前是 await api("/update-now") 一直等到更新跑完——而后端那时是在请求
+  // 线程里同步跑整轮更新的。冷启动 50 秒 + 抓十几个赛事，很容易超过前端
+  // 那个 120 秒超时，于是界面报「超过 120 秒没有响应」，可服务端其实还在跑，
+  // 用户看到的就是「点了没反应」。
+  //
+  // 现在后端立刻返回 202，真正的活在它的后台线程里。这边改成轮询
+  // /api/status，看 update_running 什么时候落下来。
   async function triggerUpdate() {
     setUpdating(true);
+    setApiError(null);
     try {
-      await api("/update-now", { method: "POST" });
+      const res = await api("/update-now", { method: "POST" });
+      // 后端说「已经有一轮在跑」也照样进轮询——那一轮跑完同样要刷新界面
+      if (res?.status === "skipped") {
+        await loadAll();
+        return;
+      }
+      // 轮询上限 5 分钟。到点就停并刷新一次：更新可能确实还没跑完，但
+      // 一直转下去比给个可能不完整的结果更糟——用户可以再点一次。
+      const DEADLINE = 5 * 60 * 1000;
+      const t0 = Date.now();
+      while (Date.now() - t0 < DEADLINE) {
+        await new Promise(r => setTimeout(r, 2500));
+        const st = await api("/status").catch(() => null);
+        if (!st) continue;                       // 冷启动期间抖一下是正常的
+        if (!st.update_running) break;
+      }
       await loadAll();
     } catch (e) {
       setApiError(e.message);
@@ -1119,8 +1147,38 @@ function LoginScreen({ onSignedIn }) {
   );
 }
 
+// 数据放了多久才算「过期」。
+//
+// 定时更新是每 12 小时一次（GitHub Actions，见
+// .github/workflows/scheduled-update.yml），所以正常情况下最旧也就 12 小时。
+// 14 是给 GitHub 定时的抖动留的——它是尽力而为的调度，迟到几十分钟很常见，
+// 门槛卡在 12 会天天误报。
+// 36 小时是「连着两次定时都没成功」，那基本可以确定是坏了，不是抖动。
+const STALE_WARN_HOURS = 14;
+const STALE_DANGER_HOURS = 36;
+
 function StatusBanner({ status, updating, onUpdateNow, refreshing, refreshFailed }) {
   if (!status) return null;
+
+  // 数据过期要能一眼看出来。
+  //
+  // 起因：界面上只有「上次更新 8月18日 下午03:22」一个日期，而当天是 8月22日
+  // ——数据已经落后四天，但除非你盯着那个日期算一下，否则完全看不出来。
+  // 根因是进程内的定时任务在会休眠的免费实例上从来没触发过（见 scheduler.py），
+  // 那个已经修了；这里加的是「万一以后再出问题，得让人立刻发现」。
+  //
+  // 刻意只做一小句，不是恢复之前那块被拿掉的详情面板——那块占地方，
+  // 用户明确说过影响美观。
+  const ageH = status.last_update
+    ? (Date.now() - new Date(status.last_update).getTime()) / 3600000
+    : null;
+  const stale = ageH != null && ageH >= STALE_WARN_HOURS;
+  const staleColor = ageH != null && ageH >= STALE_DANGER_HOURS ? C.red : C.gold;
+  // 不足一天说「N 小时」，超过一天说「N 天」——「已过期 97 小时」要在脑子里
+  // 除一次才知道有多糟。
+  const staleText = ageH == null ? "" :
+    ageH >= 48 ? `数据已过期 ${Math.floor(ageH / 24)} 天`
+               : `数据已过期 ${Math.floor(ageH)} 小时`;
 
   // On a truly fresh install, the startup run may still be in flight
   // when this first renders — last_update is null for a second or two,
@@ -1149,6 +1207,9 @@ function StatusBanner({ status, updating, onUpdateNow, refreshing, refreshFailed
                 GET /api/status 的返回里，也还在 UpdateLog 表里，排查时直接
                 看接口就行——本轮的三个 bug（队名被别名表改坏、API key 泄漏、
                 参数表过期）都是从 detail 里看出来的，只是不必挂在首页上。 */}
+            {stale && (
+              <strong style={{ color: staleColor, marginLeft: 4 }}> · {staleText}</strong>
+            )}
           </>
         )}
       </span>

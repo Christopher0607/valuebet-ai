@@ -14,14 +14,18 @@ from pydantic import BaseModel
 from typing import Optional, List
 import logging
 import os
+import hmac
+import threading
 
+from . import updater
 from .models import (
     init_db, get_db, Match, Prediction, Odds, Bet, RealBet, UserSettings,
     Competition, UpdateLog, BayesianTeamStateRow, ParlayBet, ParlayLeg, PriceLog,
     Withdrawal, MarketOdds,
+    SessionLocal,
 )
 from .updater import run_full_update
-from .scheduler import start_scheduler, next_run_info
+from .scheduler import start_scheduler, next_run_info, update_is_due
 from .auth import AUTH_ENABLED, current_user, require_auth_configured, AuthDep
 from .model import expected_value, kelly_pct, BayesianTeamState, parlay_ev_and_risk, suggest_parlays
 from .ev_evidence import (
@@ -69,7 +73,12 @@ app.add_middleware(
 #   /api/health  探活，部署平台要用
 #   /docs /openapi.json  接口文档，不含任何用户数据
 #   非 /api 开头的一切（前端静态文件、登录页本身）
-_PUBLIC_PREFIXES = ("/api/health",)
+#
+# /api/cron/update 也在这里，但它**不是无保护的**：外部定时任务拿不到
+# Supabase 用户令牌，所以它绕过 JWT 中间件，改用 CRON_SECRET 自己校验
+# （见 cron_update）。放进这个名单只是让请求走到那个函数里去，
+# 真正的门在函数内部——没配 CRON_SECRET 时它拒绝所有调用。
+_PUBLIC_PREFIXES = ("/api/health", "/api/cron/")
 
 
 @app.middleware("http")
@@ -426,6 +435,13 @@ def status(db: Session = Depends(get_db)):
         } if last_run else None,
         "status_meanings": _UPDATE_STATUS_MEANINGS,
         "next_scheduled_update": next_run_info(),
+        # 现在有一轮更新正在跑吗。前端点了「立即更新」之后靠它判断什么时候
+        # 收工——接口是立刻返回的（202），真正的活在后台线程里。
+        #
+        # 直接读 updater 那个模块级锁，不新增状态：多存一份「正在跑」的标志
+        # 就多一个会跟真实情况不同步的地方（线程崩了没人去清标志，界面就
+        # 永远显示"更新中"）。锁是那件事本身，不是它的影子。
+        "update_running": updater._update_lock.locked(),
         "note": "next_scheduled_update is null if this backend process was just restarted — "
                 "the schedule only exists while this process is running.",
         "status_note": "last_status 可能是 ok / partial / error；partial 表示有赛事抓取失败，"
@@ -434,10 +450,120 @@ def status(db: Session = Depends(get_db)):
     }
 
 
+# ══════════════════════════════════════════════════════════
+# 更新的三个触发口
+# ══════════════════════════════════════════════════════════
+#
+# 背景：进程内那个「每 12 小时」的定时任务在 Render 免费档上等于不存在
+# （闲置 15 分钟休眠，进程活不满 12 小时，见 scheduler.py 顶部）。
+# 实测后果是界面上「上次更新」停在四天前。所以云端真正的定时更新走
+# 外部触发：GitHub Actions 定时打 POST /api/cron/update。
+
+CRON_SECRET = os.environ.get("CRON_SECRET", "").strip()
+
+# 外部定时触发的最小间隔。跟 scheduler 的 12 小时一致，也就是 DEPLOY.md
+# 估算 The Odds API 免费额度（500 次/月）时用的「每天 2 次」。
+_CRON_MIN_HOURS = 12
+
+
+def _run_update_in_background() -> bool:
+    """把一轮完整更新丢到后台线程。已经有一轮在跑就不重复起。
+
+    为什么不能同步跑：一轮更新要抓十几个赛事再写库，冷启动还要先花约
+    50 秒把休眠的实例叫醒。同步跑的话这个请求会挂两分钟以上，GitHub
+    Actions 的 curl、浏览器的 fetch、以及中间任何一层代理都可能先超时——
+    连接断了，服务端却还在跑，调用方拿不到任何结果，看起来就是「点了没反应」。
+    前端那个 120 秒超时就是这么被撞上的。
+
+    返回 False 表示「已经有一轮在跑」，调用方据此回 409 而不是假装启动了。
+    这个判断是**尽力而为**的：locked() 到线程真正 acquire 之间有窗口，两个
+    同时到达的请求可能都看到"没锁"。真正的互斥在 run_full_update 里面——
+    后到的那个拿不到锁，直接返回 skipped，不会有两轮同时写库。这里的 409
+    只是为了在常见情况下给出更准确的回应，不承担正确性。
+
+    daemon=True：进程退出时不等这个线程。Render 免费档本来就是说停就停，
+    假装能优雅收尾没有意义；跑到一半没写成 UpdateLog 的那一轮，下次触发时
+    闸门会判定"还该跑"，自然会补上。
+    """
+    if updater._update_lock.locked():
+        return False
+
+    def _job():
+        db = SessionLocal()
+        try:
+            result = run_full_update(db)
+            logging.getLogger("valuebet.updater").info("[trigger] 更新结束: %s", result)
+        except Exception as e:
+            # run_full_update 内部已经把绝大多数异常吞掉并写进 UpdateLog 了。
+            # 能漏到这里的基本只有「连 UpdateLog 都写不进去」——数据库拒写
+            # （比如 Supabase 配额受限）就是这种。这时库里不会留下任何痕迹，
+            # 所以这条日志是唯一的线索，不能不记。
+            logging.getLogger("valuebet.updater").error(
+                "[trigger] 更新失败且没能写进 update_log: %s", str(e)[:300])
+        finally:
+            db.close()
+
+    threading.Thread(target=_job, name="valuebet-update", daemon=True).start()
+    return True
+
+
 @app.post("/api/update-now")
-def update_now(db: Session = Depends(get_db)):
-    """Manual trigger — lets you test without waiting 12 hours."""
-    return run_full_update(db)
+def update_now(force: bool = True):
+    """手动触发（界面上那个「立即更新」按钮）。
+
+    立刻返回，不等更新跑完——前端改成轮询 /api/status 看进度。
+    默认 force=True：人主动点的，就是想现在更新，不该被 12 小时闸门挡住。
+    """
+    if not force and not update_is_due(_CRON_MIN_HOURS):
+        return JSONResponse(
+            {"status": "skipped", "detail": f"距上次更新不足 {_CRON_MIN_HOURS} 小时"},
+            status_code=200)
+    if not _run_update_in_background():
+        return JSONResponse(
+            {"status": "already_running", "detail": "已经有一轮更新在跑，这次不重复启动"},
+            status_code=409)
+    return JSONResponse({"status": "started"}, status_code=202)
+
+
+@app.post("/api/cron/update")
+def cron_update(request: Request, force: bool = False):
+    """给外部定时任务用的触发口（GitHub Actions 每 12 小时打一次）。
+
+    认证走 CRON_SECRET，不走 Supabase JWT——GitHub Actions 拿不到用户令牌。
+    这个路径在 _PUBLIC_PREFIXES 里，绕过了 JWT 中间件，所以**这里的校验是
+    唯一的一道门**，写松了就是把「让后端跑一轮全量更新」开放给全网。
+
+    没配 CRON_SECRET 时拒绝所有调用，不是放行。跟 auth.py 里那条既定原则
+    一致：配置缺失要响，不能静默放行——否则某次部署忘了配环境变量，
+    接口就默默裸奔了，而且没有任何迹象。
+    """
+    if not CRON_SECRET:
+        return JSONResponse(
+            {"detail": "服务端没有配置 CRON_SECRET，这个接口被禁用。"
+                       "要用的话在部署平台的环境变量里配一个随机长字符串，"
+                       "并在调用方用同一个值。"},
+            status_code=503)
+
+    supplied = request.headers.get("X-Cron-Key", "")
+    # compare_digest 而不是 ==：字符串比较会在第一个不同的字符处提前返回，
+    # 逐字节的耗时差可以被用来一位一位地把密钥试出来。
+    if not hmac.compare_digest(supplied, CRON_SECRET):
+        return JSONResponse({"detail": "X-Cron-Key 不正确"}, status_code=403)
+
+    # 闸门：定时任务可能因为重试、手动触发、跟进程内那个 IntervalTrigger
+    # 撞上而多跑几次。不足 12 小时就当空操作，省 Odds API 配额和 Supabase
+    # egress。真要强跑传 ?force=true。
+    if not force and not update_is_due(_CRON_MIN_HOURS):
+        return JSONResponse(
+            {"status": "skipped",
+             "detail": f"距上次更新不足 {_CRON_MIN_HOURS} 小时，这次跳过"},
+            status_code=200)
+
+    if not _run_update_in_background():
+        return JSONResponse(
+            {"status": "already_running", "detail": "已经有一轮更新在跑"},
+            status_code=409)
+    return JSONResponse({"status": "started"}, status_code=202)
 
 
 @app.get("/api/update-log")
